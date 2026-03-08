@@ -120,7 +120,7 @@ class MintlifyClient:
         3. Asset URLs containing the subdomain
         """
         try:
-            response = self.session.get(self.docs_url)
+            response = self.session.get(self.docs_url, timeout=15)
             response.raise_for_status()
 
             # Try to find subdomain in HTML/JS
@@ -234,6 +234,7 @@ class MintlifyClient:
             self._get_api_url(),
             json=body,
             stream=True,
+            timeout=30,
         )
         response.raise_for_status()
 

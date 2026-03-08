@@ -117,9 +117,24 @@ export function SidePanel() {
         case 'sessionSwitched':
         case 'sessionDeleted':
         case 'sessionRenamed':
-          // Refresh sessions list
+          // Refresh sessions list and load the active session's data
           chrome.runtime.sendMessage({ type: 'getState' }).then(res => {
-            if (res) setState(prev => ({ ...prev, ...res }))
+            if (res) {
+              setState(prev => ({ ...prev, ...res }))
+              const sessions = res.sessions as Session[] | undefined
+              const newActiveSession = sessions?.find(s => s.id === res.activeSessionId)
+              if (newActiveSession) {
+                setMessages(newActiveSession.messages || [])
+                setCodegenSavedPath(newActiveSession.codegenSavedPath || null)
+                setCodegenVisiblePath(newActiveSession.codegenVisiblePath || null)
+                setCodegenVisibleDirectory(newActiveSession.codegenVisibleDirectory || null)
+              } else {
+                setMessages([])
+                setCodegenSavedPath(null)
+                setCodegenVisiblePath(null)
+                setCodegenVisibleDirectory(null)
+              }
+            }
           })
           break
         case 'modeChanged':
@@ -707,9 +722,8 @@ export function SidePanel() {
                     name="saveLocation"
                     checked={settings.saveLocation !== 'downloads'}
                     onChange={() => {
-                      const customPath = prompt('Enter custom folder path:', '/Users/')
-                      if (customPath) {
-                        const newSettings = { ...settings, saveLocation: customPath }
+                      if (settings.saveLocation === 'downloads') {
+                        const newSettings = { ...settings, saveLocation: '/Users/' }
                         setSettings(newSettings)
                         chrome.runtime.sendMessage({ type: 'saveSettings', settings: newSettings })
                       }
@@ -722,8 +736,18 @@ export function SidePanel() {
 
               {settings.saveLocation !== 'downloads' && (
                 <div className="mt-2 p-2 bg-background-elevated rounded-lg">
-                  <div className="text-xs text-white/50 mb-1">Current path:</div>
-                  <div className="text-xs text-white/80 font-mono break-all">{settings.saveLocation}</div>
+                  <div className="text-xs text-white/50 mb-1">Custom path:</div>
+                  <input
+                    type="text"
+                    value={settings.saveLocation}
+                    onChange={(e) => {
+                      const newSettings = { ...settings, saveLocation: e.target.value }
+                      setSettings(newSettings)
+                      chrome.runtime.sendMessage({ type: 'saveSettings', settings: newSettings })
+                    }}
+                    className="w-full text-xs text-white/80 font-mono bg-background border border-white/10 rounded px-2 py-1 focus:outline-none focus:border-primary"
+                    placeholder="/Users/..."
+                  />
                 </div>
               )}
             </div>

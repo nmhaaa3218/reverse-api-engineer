@@ -152,7 +152,7 @@ export function SessionSelector({
                   key={session.id}
                   className="group flex items-center gap-2 px-3 py-2 hover:bg-white/5 cursor-pointer transition-colors"
                   onClick={() => {
-                    if (!editingId && session.id !== activeSessionId) {
+                    if (!editingId && session.id !== activeSessionId && !isCapturing) {
                       onSwitchSession(session.id)
                       setIsOpen(false)
                     }

@@ -577,5 +577,3 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
                         debug_log(f"Cleaned up MCP server: {self.mcp_name}")
                 except Exception:
                     pass  # Ignore cleanup errors
-
-# https://www.migros.ch/fr/category/home

@@ -78,6 +78,8 @@ function broadcastMessage(message: Record<string, unknown>): void {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // codegenAction messages are handled by the dedicated listener below
+  if (message.type === 'codegenAction') return false
   handleMessage(message)
     .then(sendResponse)
     .catch((error) => {
@@ -282,7 +284,7 @@ def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         page = browser.new_page()
-        page.goto("${tab.url || 'about:blank'}")
+        page.goto("${escapePythonString(tab.url || 'about:blank')}")
 
 `
 

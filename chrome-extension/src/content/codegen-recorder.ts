@@ -161,12 +161,10 @@ function commitPendingInput() {
   if (!lastInputElement) return
 
   const selector = getSelector(lastInputElement)
-  const value = escapeString(lastInputElement.value)
+  const value = lastInputElement.value
 
-  if (value) {
-    console.log('[Codegen] Fill input:', selector, 'with value:', value)
-    sendAction('fill', { selector, value })
-  }
+  console.log('[Codegen] Fill input:', selector, 'with value:', value)
+  sendAction('fill', { selector, value })
 
   lastInputElement = null
   if (inputTimeout) {
@@ -182,7 +180,7 @@ function handleChange(event: Event) {
   if (!target || target.tagName !== 'SELECT') return
 
   const selector = getSelector(target)
-  const value = escapeString(target.value)
+  const value = target.value
 
   sendAction('select', { selector, value })
 }
@@ -240,8 +238,7 @@ function startRecording() {
   isRecording = true
   lastUrl = window.location.href
 
-  // Send initial navigation
-  sendAction('navigate', { url: lastUrl })
+  // Don't send initial navigation - startCodegen() already adds page.goto() in the template
 
   document.addEventListener('click', handleClick, true)
   document.addEventListener('input', handleInput, true)

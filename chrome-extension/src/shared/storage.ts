@@ -42,7 +42,7 @@ export async function saveSession(session: Session): Promise<void> {
   const sessions = await getAllSessions()
   const index = sessions.findIndex(s => s.id === session.id)
   if (index >= 0) {
-    sessions[index] = session
+    sessions[index] = { ...sessions[index], ...session }
   } else {
     sessions.push(session)
   }
@@ -51,10 +51,14 @@ export async function saveSession(session: Session): Promise<void> {
 
 export async function deleteSession(sessionId: string): Promise<void> {
   const sessions = await getAllSessions()
+  const deleted = sessions.find(s => s.id === sessionId)
   const filtered = sessions.filter(s => s.id !== sessionId)
   await saveAllSessions(filtered)
-  // Also clean up captured requests for this session
+  // Clean up captured requests and chat history for this session
   await chrome.storage.local.remove(`capturedRequests_${sessionId}`)
+  if (deleted?.runId) {
+    await chrome.storage.local.remove(`chat_${deleted.runId}`)
+  }
 }
 
 export async function getActiveSessionId(): Promise<string | null> {
@@ -115,6 +119,8 @@ export async function saveCurrentSession(session: Partial<Session> & { runId: st
       ...session,
     }
     await saveSession(updatedSession)
+  } else {
+    console.warn('saveCurrentSession: no active session, save skipped')
   }
 }
 

@@ -503,7 +503,7 @@ class NativeHostHandler:
         try:
             run_id = message.get("run_id")
             script_content = message.get("script")
-            filename = message.get("filename", "codegen_script.py")
+            filename = Path(message.get("filename", "codegen_script.py")).name or "codegen_script.py"
             save_location = message.get("save_location", "downloads")
             domain = message.get("domain")
 
