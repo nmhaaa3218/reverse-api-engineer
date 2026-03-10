@@ -433,6 +433,21 @@ Your OpenAPI spec should be production-ready and suitable for:
             mode_description = f"reverse engineer API calls and generate production-ready {language_name} code that replicates"
             task_description = f"{language_name} API client"
 
+        attempt_log_section = "" if self.output_mode == "docs" else (
+            "If your first attempt doesn't work, analyze what went wrong and try again. "
+            "Document each attempt and what you learned.\n\n"
+            "<attempt_log>\n"
+            "For each attempt (up to 5), document:\n"
+            "- Attempt number\n"
+            "- What approach you tried\n"
+            "- What error or issue occurred (if any)\n"
+            "- What you changed for the next attempt\n"
+            "</attempt_log>\n\n"
+        )
+        after_verb = "documenting" if self.output_mode == "docs" else "testing"
+        output_type = "spec" if self.output_mode == "docs" else "code"
+        quality_check = "The completeness and accuracy of the OpenAPI spec" if self.output_mode == "docs" else "Whether the implementation works"
+
         base_prompt = f"""You are tasked with analyzing a HAR (HTTP Archive) file to {mode_description} those calls.
 
 Here is the HAR file path you need to analyze:
@@ -451,9 +466,7 @@ Here is the output directory where you should save your generated files:
 </output_dir>
 
 **IMPORTANT: You have access to the AskUserQuestion tool to ask clarifying questions during your analysis.**
-Use this tool when you need to clarify functional requirements, prioritize features, choose between implementation approaches, or gather any other information that would help you generate better {
-            task_description
-        }.
+Use this tool when you need to clarify functional requirements, prioritize features, choose between implementation approaches, or gather any other information that would help you generate better {task_description}.
 
 Your task is to:
 
@@ -498,31 +511,15 @@ In your scratchpad:
 - Identify any ambiguities or questions you should ask the user using AskUserQuestion
 </scratchpad>
 
-{
-            ""
-            if self.output_mode == "docs"
-            else '''If your first attempt doesn't work, analyze what went wrong and try again. Document each attempt and what you learned.
-
-<attempt_log>
-For each attempt (up to 5), document:
-- Attempt number
-- What approach you tried
-- What error or issue occurred (if any)
-- What you changed for the next attempt
-</attempt_log>
-
-'''
-        }After {"documenting" if self.output_mode == "docs" else "testing"}, provide your final response with:
+{attempt_log_section}After {after_verb}, provide your final response with:
 - A summary of the APIs discovered
 - The authentication method used
-- {"The completeness and accuracy of the OpenAPI spec" if self.output_mode == "docs" else "Whether the implementation works"}
+- {quality_check}
 - Any limitations or caveats
 - The paths to the generated files
 
 Your final output should confirm that the files have been created and provide a brief summary of what was accomplished.
-Do not include the full {
-            "spec" if self.output_mode == "docs" else "code"
-        } in your response - just confirm the files were saved and summarize the key findings.
+Do not include the full {output_type} in your response - just confirm the files were saved and summarize the key findings.
 """
         if self.additional_instructions:
             base_prompt += f"\n\nAdditional instructions:\n{self.additional_instructions}"

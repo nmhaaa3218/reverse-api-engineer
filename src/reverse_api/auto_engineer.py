@@ -680,7 +680,7 @@ class CopilotAutoEngineer:
                 "timeout": 30000,
             }
 
-            async def on_pre_tool_use(input: dict, invocation: dict) -> dict:
+            async def on_pre_tool_use(input: dict, _invocation: dict) -> dict:
                 tool_name = input.get("toolName", "unknown")
                 tool_args = input.get("toolArgs") or {}
                 eng.ui.tool_start(tool_name, tool_args)
