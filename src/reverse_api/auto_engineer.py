@@ -11,11 +11,14 @@ import httpx
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
-    ClaudeSDKClient,
+    HookMatcher,
+    PermissionResultAllow,
     ResultMessage,
     TextBlock,
+    ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
+    query,
 )
 
 from .engineer import ClaudeEngineer
@@ -226,6 +229,19 @@ Your final response should confirm the files were created and provide a brief su
 - Any limitations or caveats
 """
 
+    async def _handle_tool_permission(
+        self, tool_name: str, input_data: dict[str, Any], context: ToolPermissionContext
+    ) -> PermissionResultAllow:
+        """Handle tool permission requests, with interactive UI for AskUserQuestion."""
+        if tool_name == "AskUserQuestion":
+            questions = input_data.get("questions", [])
+            answers = await self._ask_user_interactive(questions)
+            return PermissionResultAllow(
+                updated_input={"questions": questions, "answers": answers},
+            )
+        # Auto-approve all other tools
+        return PermissionResultAllow(updated_input=input_data)
+
     async def analyze_and_generate(self) -> dict[str, Any] | None:
         """Run auto mode with MCP browser integration."""
         self.ui.header(self.run_id, self.prompt, self.model)
@@ -243,119 +259,116 @@ Your final response should confirm the files were created and provide a brief su
             ],
         }
 
+        # Required workaround: dummy hook keeps the stream open for can_use_tool
+        # See: https://platform.claude.com/docs/en/agent-sdk/user-input
+        async def _dummy_hook(input_data: dict[str, Any], tool_use_id: str | None, context: Any) -> dict[str, Any]:
+            return {"continue_": True}
+
+        prompt_text = self._build_auto_prompt()
+
+        async def _prompt_stream() -> Any:
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": prompt_text},
+            }
+
         options = ClaudeAgentOptions(
             mcp_servers={"playwright": mcp_config},
-            permission_mode="bypassPermissions",  # Auto-accept browser tool usage
-            allowed_tools=[
-                "Read",
-                "Write",
-                "Bash",
-                "Glob",
-                "Grep",
-                "WebSearch",
-                "WebFetch",
-            ],
+            can_use_tool=self._handle_tool_permission,
+            hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[_dummy_hook])]},
             cwd=str(self.scripts_dir.parent.parent),  # Project root
             model=self.model,
         )
 
         try:
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(self._build_auto_prompt())
+            async for message in query(prompt=_prompt_stream(), options=options):
+                # Check for usage metadata
+                if hasattr(message, "usage") and isinstance(message.usage, dict):
+                    self.usage_metadata.update(message.usage)
 
-                # Process response and show progress with TUI
-                async for message in client.receive_response():
-                    # Check for usage metadata
-                    if hasattr(message, "usage") and isinstance(message.usage, dict):
-                        self.usage_metadata.update(message.usage)
+                if isinstance(message, AssistantMessage):
+                    last_tool_name = None
+                    for block in message.content:
+                        if isinstance(block, ToolUseBlock):
+                            last_tool_name = block.name
+                            self.ui.tool_start(block.name, block.input)
+                            self.message_store.save_tool_start(block.name, block.input)
+                        elif isinstance(block, ToolResultBlock):
+                            is_error = block.is_error if block.is_error else False
 
-                    if isinstance(message, AssistantMessage):
-                        last_tool_name = None
-                        for block in message.content:
-                            if isinstance(block, ToolUseBlock):
-                                last_tool_name = block.name
-                                self.ui.tool_start(block.name, block.input)
-                                self.message_store.save_tool_start(block.name, block.input)
-                            elif isinstance(block, ToolResultBlock):
-                                is_error = block.is_error if block.is_error else False
+                            # Extract output from ToolResultBlock
+                            output = None
+                            if hasattr(block, "content"):
+                                output = block.content
+                            elif hasattr(block, "result"):
+                                output = block.result
+                            elif hasattr(block, "output"):
+                                output = block.output
 
-                                # Extract output from ToolResultBlock
-                                output = None
-                                if hasattr(block, "content"):
-                                    output = block.content
-                                elif hasattr(block, "result"):
-                                    output = block.result
-                                elif hasattr(block, "output"):
-                                    output = block.output
+                            tool_name = last_tool_name or "Tool"
+                            self.ui.tool_result(tool_name, is_error, output)
+                            self.message_store.save_tool_result(tool_name, is_error, str(output) if output else None)
+                        elif isinstance(block, TextBlock):
+                            self.ui.thinking(block.text)
+                            self.message_store.save_thinking(block.text)
 
-                                tool_name = last_tool_name or "Tool"
-                                self.ui.tool_result(tool_name, is_error, output)
-                                self.message_store.save_tool_result(tool_name, is_error, str(output) if output else None)
-                            elif isinstance(block, TextBlock):
-                                self.ui.thinking(block.text)
-                                self.message_store.save_thinking(block.text)
+                elif isinstance(message, ResultMessage):
+                    if message.is_error:
+                        self.ui.error(message.result or "Unknown error")
+                        self.message_store.save_error(message.result or "Unknown error")
+                        return None
+                    else:
+                        script_path = str(self.scripts_dir / self._get_client_filename())
+                        local_path = str(self.local_scripts_dir / self._get_client_filename()) if self.local_scripts_dir else None
+                        self.ui.success(script_path, local_path)
 
-                    elif isinstance(message, ResultMessage):
-                        if message.is_error:
-                            self.ui.error(message.result or "Unknown error")
-                            self.message_store.save_error(message.result or "Unknown error")
-                            return None
-                        else:
-                            script_path = str(self.scripts_dir / self._get_client_filename())
-                            local_path = str(self.local_scripts_dir / self._get_client_filename()) if self.local_scripts_dir else None
-                            self.ui.success(script_path, local_path)
+                        # Calculate estimated cost if we have usage data
+                        if self.usage_metadata:
+                            input_tokens = self.usage_metadata.get("input_tokens", 0)
+                            output_tokens = self.usage_metadata.get("output_tokens", 0)
+                            cache_creation_tokens = self.usage_metadata.get("cache_creation_input_tokens", 0)
+                            cache_read_tokens = self.usage_metadata.get("cache_read_input_tokens", 0)
 
-                            # Calculate estimated cost if we have usage data
-                            if self.usage_metadata:
-                                input_tokens = self.usage_metadata.get("input_tokens", 0)
-                                output_tokens = self.usage_metadata.get("output_tokens", 0)
-                                cache_creation_tokens = self.usage_metadata.get("cache_creation_input_tokens", 0)
-                                cache_read_tokens = self.usage_metadata.get("cache_read_input_tokens", 0)
+                            from .pricing import calculate_cost
 
-                                # Calculate cost using shared pricing module
-                                from .pricing import calculate_cost
+                            cost = calculate_cost(
+                                model_id=self.model,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                cache_creation_tokens=cache_creation_tokens,
+                                cache_read_tokens=cache_read_tokens,
+                            )
+                            self.usage_metadata["estimated_cost_usd"] = cost
 
-                                cost = calculate_cost(
-                                    model_id=self.model,
-                                    input_tokens=input_tokens,
-                                    output_tokens=output_tokens,
-                                    cache_creation_tokens=cache_creation_tokens,
-                                    cache_read_tokens=cache_read_tokens,
-                                )
-                                self.usage_metadata["estimated_cost_usd"] = cost
+                            self.ui.console.print("  [dim]Usage:[/dim]")
+                            if input_tokens > 0:
+                                self.ui.console.print(f"  [dim]  input: {input_tokens:,} tokens[/dim]")
+                            if cache_creation_tokens > 0:
+                                self.ui.console.print(f"  [dim]  cache creation: {cache_creation_tokens:,} tokens[/dim]")
+                            if cache_read_tokens > 0:
+                                self.ui.console.print(f"  [dim]  cache read: {cache_read_tokens:,} tokens[/dim]")
+                            if output_tokens > 0:
+                                self.ui.console.print(f"  [dim]  output: {output_tokens:,} tokens[/dim]")
+                            self.ui.console.print(f"  [dim]  total cost: ${cost:.4f}[/dim]")
 
-                                # Display usage breakdown
-                                self.ui.console.print(f"  [dim]Usage:[/dim]")  # noqa: F541
-                                if input_tokens > 0:
-                                    self.ui.console.print(f"  [dim]  input: {input_tokens:,} tokens[/dim]")
-                                if cache_creation_tokens > 0:
-                                    self.ui.console.print(f"  [dim]  cache creation: {cache_creation_tokens:,} tokens[/dim]")
-                                if cache_read_tokens > 0:
-                                    self.ui.console.print(f"  [dim]  cache read: {cache_read_tokens:,} tokens[/dim]")
-                                if output_tokens > 0:
-                                    self.ui.console.print(f"  [dim]  output: {output_tokens:,} tokens[/dim]")
-                                self.ui.console.print(f"  [dim]  total cost: ${cost:.4f}[/dim]")
-
-                            result: dict[str, Any] = {
-                                "script_path": script_path,
-                                "usage": self.usage_metadata,
-                            }
-                            self.message_store.save_result(result)
-                            return result
+                        result: dict[str, Any] = {
+                            "script_path": script_path,
+                            "usage": self.usage_metadata,
+                        }
+                        self.message_store.save_result(result)
+                        return result
 
         except Exception as e:
             error_msg = str(e)
             self.ui.error(error_msg)
             self.message_store.save_error(error_msg)
 
-            # Handle screenshot buffer size errors specifically
             if "buffer size" in error_msg.lower() or "1048576" in error_msg or "exceeded maximum buffer" in error_msg.lower():
-                self.ui.console.print("\n[yellow]⚠ Screenshot too large (exceeds 1MB limit)[/yellow]")
+                self.ui.console.print("\n[yellow]Screenshot too large (exceeds 1MB limit)[/yellow]")
                 self.ui.console.print("[dim]Tip: The AI should take element-specific screenshots instead of full-page screenshots.[/dim]")
                 self.ui.console.print(
                     "[dim]Consider using browser_snapshot() for accessibility tree information when screenshots aren't needed.[/dim]"
                 )
-            # Provide helpful error messages
             elif "MCP server" in error_msg or "npx" in error_msg:
                 self.ui.console.print("\n[dim]Make sure rae-playwright-mcp is installed: npm install -g rae-playwright-mcp[/dim]")
             else:
