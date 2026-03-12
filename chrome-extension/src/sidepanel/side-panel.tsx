@@ -37,7 +37,7 @@ const DEFAULT_STATE: ExtendedAppState = {
 }
 
 const DEFAULT_SETTINGS: Settings = {
-  lastModel: 'claude-sonnet-4-5',
+  lastModel: 'claude-sonnet-4-6',
   captureTypes: ['xhr', 'fetch', 'websocket'],
   saveLocation: 'downloads'
 }

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 from pathlib import Path
 
@@ -36,9 +37,11 @@ from .utils import (
     generate_folder_name,
     generate_run_id,
     get_actions_path,
+    get_base_output_dir,
     get_config_path,
     get_har_dir,
     get_history_path,
+    get_messages_path,
     get_scripts_dir,
     get_timestamp,
     parse_codegen_tag,
@@ -261,7 +264,7 @@ def prompt_interactive_options(
         return {
             "mode": result_mode,
             "run_id": prompt,
-            "model": model or config_manager.get("claude_code_model", "claude-sonnet-4-5"),
+            "model": model or config_manager.get("claude_code_model", "claude-sonnet-4-6"),
         }
 
     # Agent mode: similar to manual but uses autonomous browser
@@ -285,7 +288,7 @@ def prompt_interactive_options(
                 raise click.Abort()
 
         if model is None:
-            model = config_manager.get("claude_code_model", "claude-sonnet-4-5")
+            model = config_manager.get("claude_code_model", "claude-sonnet-4-6")
 
         return {
             "mode": result_mode,
@@ -298,7 +301,7 @@ def prompt_interactive_options(
     # Collector mode: just needs prompt
     if result_mode == "collector":
         if model is None:
-            model = config_manager.get("collector_model", "claude-sonnet-4-5")
+            model = config_manager.get("collector_model", "claude-sonnet-4-6")
 
         return {
             "mode": result_mode,
@@ -330,7 +333,7 @@ def prompt_interactive_options(
         reverse_engineer = True
 
     if model is None:
-        model = config_manager.get("claude_code_model", "claude-sonnet-4-5")
+        model = config_manager.get("claude_code_model", "claude-sonnet-4-6")
 
     return {
         "mode": result_mode,
@@ -356,9 +359,11 @@ def repl_loop():
     # Get current SDK and model from config
     sdk = config_manager.get("sdk", "claude")
     if sdk == "opencode":
-        model = config_manager.get("opencode_model", "claude-opus-4-5")
+        model = config_manager.get("opencode_model", "claude-opus-4-6")
+    elif sdk == "copilot":
+        model = config_manager.get("copilot_model", "gpt-5")
     else:
-        model = config_manager.get("claude_code_model", "claude-sonnet-4-5")
+        model = config_manager.get("claude_code_model", "claude-sonnet-4-6")
 
     display_banner(console, sdk=sdk, model=model)
     console.print("  [dim]shift+tab to cycle modes: manual | engineer | agent | collector[/dim]")
@@ -553,6 +558,7 @@ def handle_settings(mode_color=THEME_PRIMARY):
         Choice(title="Agent Provider", value="agent_provider"),
         Choice(title="Browser-Use Model", value="browser_use_model"),
         Choice(title="Claude Code Model", value="claude_code_model"),
+        Choice(title="Copilot Model", value="copilot_model"),
         Choice(title="OpenCode Model", value="opencode_model"),
         Choice(title="OpenCode Provider", value="opencode_provider"),
         Choice(title="Output Directory", value="output_dir"),
@@ -602,8 +608,9 @@ def handle_settings(mode_color=THEME_PRIMARY):
 
     elif action == "sdk":
         sdk_choices = [
-            Choice(title="opencode", value="opencode"),
             Choice(title="claude", value="claude"),
+            Choice(title="copilot", value="copilot"),
+            Choice(title="opencode", value="opencode"),
             Choice(title="back", value="back"),
         ]
         sdk = questionary.select(
@@ -690,12 +697,34 @@ def handle_settings(mode_color=THEME_PRIMARY):
                 config_manager.set("opencode_provider", new_provider)
                 console.print(f" [dim]updated[/dim] opencode provider: {new_provider}\n")
 
+    elif action == "copilot_model":
+        current = config_manager.get("copilot_model", "gpt-5")
+        new_model = questionary.text(
+            " > copilot model",
+            default=current or "gpt-5",
+            instruction="(e.g., 'gpt-5', 'gpt-4.1')",
+            qmark="",
+            style=questionary.Style(
+                [
+                    ("question", f"fg:{THEME_SECONDARY}"),
+                    ("instruction", f"fg:{THEME_DIM} italic"),
+                ]
+            ),
+        ).ask()
+        if new_model is not None:
+            new_model = new_model.strip()
+            if not new_model:
+                console.print(" [yellow]error:[/yellow] copilot model cannot be empty\n")
+            else:
+                config_manager.set("copilot_model", new_model)
+                console.print(f" [dim]updated[/dim] copilot model: {new_model}\n")
+
     elif action == "opencode_model":
-        current = config_manager.get("opencode_model", "claude-opus-4-5")
+        current = config_manager.get("opencode_model", "claude-opus-4-6")
         new_model = questionary.text(
             " > opencode model",
-            default=current or "claude-opus-4-5",
-            instruction="(e.g., 'claude-sonnet-4-5', 'claude-opus-4-5')",
+            default=current or "claude-opus-4-6",
+            instruction="(e.g., 'claude-sonnet-4-6', 'claude-opus-4-6')",
             qmark="",
             style=questionary.Style(
                 [
@@ -754,7 +783,7 @@ def handle_settings(mode_color=THEME_PRIMARY):
 
         current = config_manager.get("stagehand_model", "openai/computer-use-preview-2025-03-11")
         instruction = (
-            "(Format: 'openai/model' or 'anthropic/model', e.g., 'openai/computer-use-preview-2025-03-11' or 'anthropic/claude-sonnet-4-5-20250929')"
+            "(Format: 'openai/model' or 'anthropic/model', e.g., 'openai/computer-use-preview-2025-03-11' or 'anthropic/claude-sonnet-4-6-20260301')"
         )
 
         new_model = questionary.text(
@@ -784,9 +813,9 @@ def handle_settings(mode_color=THEME_PRIMARY):
                     console.print(
                         " [dim]Valid formats for stagehand:[/dim]\n"
                         " [dim]  - openai/computer-use-preview-2025-03-11[/dim]\n"
-                        " [dim]  - anthropic/claude-sonnet-4-5-20250929[/dim]\n"
+                        " [dim]  - anthropic/claude-sonnet-4-6-20260301[/dim]\n"
                         " [dim]  - anthropic/claude-haiku-4-5-20251001[/dim]\n"
-                        " [dim]  - anthropic/claude-opus-4-5-20251101[/dim]\n"
+                        " [dim]  - anthropic/claude-opus-4-6-20260301[/dim]\n"
                     )
 
     elif action == "real_time_sync":
@@ -895,7 +924,7 @@ def handle_history(mode_color=THEME_PRIMARY):
         console.print()
 
         if questionary.confirm(" > recode?", qmark="").ask():
-            model = run.get("model") or config_manager.get("claude_code_model", "claude-sonnet-4-5")
+            model = run.get("model") or config_manager.get("claude_code_model", "claude-sonnet-4-6")
             run_engineer(run_id, model=model)
     else:
         console.print(" [dim]> not found[/dim]")
@@ -1145,7 +1174,7 @@ def handle_messages(run_id: str, mode_color=THEME_PRIMARY):
 @click.option(
     "--model",
     "-m",
-    type=click.Choice(["claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"]),
+    type=click.Choice(["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]),
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
@@ -1377,7 +1406,7 @@ def run_collector(prompt=None, model=None, output_dir=None):
 
     # Use collector model from config if not specified
     if model is None:
-        model = config_manager.get("collector_model", "claude-sonnet-4-5")
+        model = config_manager.get("collector_model", "claude-sonnet-4-6")
 
     # Initialize session
     session_manager.add_run(
@@ -1459,7 +1488,19 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None):
                 prompt=prompt,
                 output_dir=output_dir,
                 opencode_provider=config_manager.get("opencode_provider", "anthropic"),
-                opencode_model=config_manager.get("opencode_model", "claude-opus-4-5"),
+                opencode_model=config_manager.get("opencode_model", "claude-opus-4-6"),
+                enable_sync=config_manager.get("real_time_sync", False),
+                sdk=sdk,
+                output_language=output_language,
+            )
+        elif sdk == "copilot":
+            from .auto_engineer import CopilotAutoEngineer
+
+            engineer = CopilotAutoEngineer(
+                run_id=run_id,
+                prompt=prompt,
+                copilot_model=config_manager.get("copilot_model", "gpt-5"),
+                output_dir=output_dir,
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
                 output_language=output_language,
@@ -1470,7 +1511,7 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None):
             engineer = ClaudeAutoEngineer(
                 run_id=run_id,
                 prompt=prompt,
-                model=model or config_manager.get("claude_code_model", "claude-sonnet-4-5"),
+                model=model or config_manager.get("claude_code_model", "claude-sonnet-4-6"),
                 output_dir=output_dir,
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
@@ -1550,7 +1591,7 @@ def run_playwright_codegen(run_id: str, prompt: str, output_dir: str | None = No
 @click.option(
     "--model",
     "-m",
-    type=click.Choice(["claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"]),
+    type=click.Choice(["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]),
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
@@ -1603,7 +1644,22 @@ def run_engineer(
             output_dir=output_dir,
             sdk=sdk,
             opencode_provider=config_manager.get("opencode_provider", "anthropic"),
-            opencode_model=config_manager.get("opencode_model", "claude-opus-4-5"),
+            opencode_model=config_manager.get("opencode_model", "claude-opus-4-6"),
+            enable_sync=enable_sync,
+            additional_instructions=additional_instructions,
+            is_fresh=is_fresh,
+            output_language=output_language,
+            output_mode=output_mode,
+        )
+    elif sdk == "copilot":
+        result = run_reverse_engineering(
+            run_id=run_id,
+            har_path=har_path,
+            prompt=prompt,
+            model=model,
+            output_dir=output_dir,
+            sdk=sdk,
+            copilot_model=config_manager.get("copilot_model", "gpt-5"),
             enable_sync=enable_sync,
             additional_instructions=additional_instructions,
             is_fresh=is_fresh,
@@ -1615,7 +1671,7 @@ def run_engineer(
             run_id=run_id,
             har_path=har_path,
             prompt=prompt,
-            model=model or config_manager.get("claude_code_model", "claude-sonnet-4-5"),
+            model=model or config_manager.get("claude_code_model", "claude-sonnet-4-6"),
             output_dir=output_dir,
             sdk=sdk,
             enable_sync=enable_sync,
@@ -1675,6 +1731,232 @@ def run_engineer(
             paths={"script_path": result.get("script_path")},
         )
     return result
+
+
+def _get_run_details(run: dict) -> dict:
+    """Enrich a history entry with filesystem info."""
+    run_id = run.get("run_id", "")
+    output_dir = config_manager.get("output_dir")
+    base_dir = get_base_output_dir(output_dir)
+    script_dir = base_dir / "scripts" / run_id
+
+    files = []
+    if script_dir.exists():
+        files = sorted(f.name for f in script_dir.iterdir() if f.is_file())
+
+    # Scan ./scripts/ subdirectories to find local copy
+    local_path = None
+    local_scripts = Path.cwd() / "scripts"
+    if local_scripts.exists() and files:
+        files_set = set(files)
+        for subdir in local_scripts.iterdir():
+            if subdir.is_dir():
+                local_files = {f.name for f in subdir.iterdir() if f.is_file()}
+                if local_files and local_files == files_set:
+                    local_path = f"./scripts/{subdir.name}/"
+                    break
+
+    usage = run.get("usage", {})
+    cost = usage.get("total_cost", usage.get("cost"))
+
+    return {
+        "run_id": run_id,
+        "prompt": run.get("prompt", ""),
+        "timestamp": run.get("timestamp", ""),
+        "model": run.get("model", ""),
+        "mode": run.get("mode", ""),
+        "sdk": run.get("sdk", ""),
+        "cost": cost,
+        "script_dir": str(script_dir),
+        "files": files,
+        "file_count": len(files),
+        "local_path": local_path,
+    }
+
+
+@main.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Output as flat JSON array.")
+@click.option("--full", is_flag=True, help="Show all columns (default: compact view).")
+@click.option("--limit", "-n", type=int, default=None, help="Limit number of results.")
+@click.option("--mode", "-m", type=str, default=None, help="Filter by mode (auto/manual/agent/engineer/collector).")
+@click.option("--model", type=str, default=None, help="Filter by model name.")
+@click.option("--search", "-s", type=str, default=None, help="Case-insensitive substring match on prompt.")
+def list_runs(as_json, full, limit, mode, model, search):
+    """List generated scripts and runs with optional filters."""
+    from rich.table import Table
+
+    runs = list(session_manager.history)
+
+    if mode:
+        runs = [r for r in runs if r.get("mode", "") == mode]
+    if model:
+        runs = [r for r in runs if model.lower() in (r.get("model") or "").lower()]
+    if search:
+        runs = [r for r in runs if search.lower() in (r.get("prompt") or "").lower()]
+
+    if not runs:
+        if not session_manager.history:
+            console.print("No runs found.", style="dim")
+        else:
+            console.print("No matching runs found.")
+        return
+
+    if limit is not None:
+        runs = runs[:limit]
+
+    results = [_get_run_details(r) for r in runs]
+
+    if as_json:
+        click.echo(json.dumps(results, indent=2))
+        return
+
+    if full:
+        table = Table(show_lines=False)
+        table.add_column("run_id", style="cyan")
+        table.add_column("prompt", max_width=40)
+        table.add_column("timestamp")
+        table.add_column("model")
+        table.add_column("mode")
+        table.add_column("sdk")
+        table.add_column("cost", justify="right")
+        table.add_column("script_dir")
+        table.add_column("files", justify="right")
+        for r in results:
+            prompt = r["prompt"][:40] + ("..." if len(r["prompt"]) > 40 else "")
+            cost_str = f"${r['cost']:.2f}" if r["cost"] is not None else ""
+            table.add_row(
+                r["run_id"],
+                prompt,
+                r["timestamp"],
+                r["model"] or "",
+                r["mode"] or "",
+                r["sdk"] or "",
+                cost_str,
+                r["script_dir"],
+                str(r["file_count"]),
+            )
+    else:
+        table = Table(show_lines=False)
+        table.add_column("run_id", style="cyan")
+        table.add_column("prompt", max_width=40)
+        table.add_column("timestamp")
+        table.add_column("script_dir")
+        for r in results:
+            prompt = r["prompt"][:40] + ("..." if len(r["prompt"]) > 40 else "")
+            table.add_row(
+                r["run_id"],
+                prompt,
+                r["timestamp"],
+                r["script_dir"],
+            )
+
+    console.print(table)
+
+
+@main.command("show")
+@click.argument("run_id", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON object.")
+def show_run(run_id, as_json):
+    """Show detailed info for a specific run."""
+    from rich.table import Table
+    from rich.text import Text
+
+    if run_id:
+        run = session_manager.get_run(run_id)
+    elif session_manager.history:
+        run = session_manager.history[0]
+    else:
+        console.print("No runs found.", style="dim")
+        return
+
+    if run is None:
+        console.print(f"Run not found: {run_id}")
+        return
+
+    details = _get_run_details(run)
+    rid = details["run_id"]
+    output_dir = config_manager.get("output_dir")
+    base_dir = get_base_output_dir(output_dir)
+
+    # Extra fields
+    details["url"] = run.get("url")
+    details["output_mode"] = run.get("output_mode", "client")
+
+    usage = run.get("usage", {})
+    details["input_tokens"] = usage.get("input_tokens", 0)
+    details["output_tokens"] = usage.get("output_tokens", 0)
+    details["cache_creation_input_tokens"] = usage.get("cache_creation_input_tokens", 0)
+    details["cache_read_input_tokens"] = usage.get("cache_read_input_tokens", 0)
+
+    # Artifact paths with existence
+    har_dir = base_dir / "har" / rid
+    messages_path = get_messages_path(rid, output_dir)
+    script_dir = Path(details["script_dir"])
+
+    details["har_dir"] = str(har_dir)
+    details["har_dir_exists"] = har_dir.exists()
+    details["messages_path"] = str(messages_path)
+    details["messages_path_exists"] = messages_path.exists()
+    details["script_dir_exists"] = script_dir.exists()
+
+    # HAR entry count
+    har_entries = None
+    if har_dir.exists():
+        recording = har_dir / "recording.har"
+        if recording.exists():
+            try:
+                har_data = json.loads(recording.read_text())
+                har_entries = len(har_data.get("log", {}).get("entries", []))
+            except Exception:
+                pass
+    details["har_entries"] = har_entries
+
+    if as_json:
+        click.echo(json.dumps(details, indent=2))
+        return
+
+    # Rich table output
+    table = Table(show_header=False, show_lines=True)
+    table.add_column(style="bold cyan")
+    table.add_column()
+
+    def _path_val(path_str: str, exists: bool) -> Text:
+        t = Text(path_str + " ")
+        t.append("✓" if exists else "✗", style="green" if exists else "red")
+        return t
+
+    rows: list[tuple[str, Text | str]] = [
+        ("prompt", details["prompt"]),
+        ("timestamp", details["timestamp"]),
+        ("model", details["model"]),
+        ("mode", details["mode"]),
+        ("sdk", details["sdk"]),
+        ("output_mode", details["output_mode"]),
+        ("url", details.get("url")),
+        ("cost", f"${details['cost']:.2f}" if details["cost"] is not None else None),
+        ("input_tokens", str(details["input_tokens"])),
+        ("output_tokens", str(details["output_tokens"])),
+        ("cache_creation", str(details["cache_creation_input_tokens"])),
+        ("cache_read", str(details["cache_read_input_tokens"])),
+        ("har_dir", _path_val(details["har_dir"], details["har_dir_exists"])),
+        ("har_entries", str(har_entries) if har_entries is not None else None),
+        ("script_dir", _path_val(details["script_dir"], details["script_dir_exists"])),
+    ]
+
+    files = details["files"]
+    if files:
+        rows.append(("files", ", ".join(files) + f" ({len(files)})"))
+
+    rows.append(("local_path", details.get("local_path")))
+    rows.append(("messages", _path_val(details["messages_path"], details["messages_path_exists"])))
+
+    for key, val in rows:
+        if val is None or val == "":
+            continue
+        table.add_row(key, val if isinstance(val, Text) else str(val))
+
+    console.print(f"\nRun {rid}")
+    console.print(table)
 
 
 @main.command("install-host")
