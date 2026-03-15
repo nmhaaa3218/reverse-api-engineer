@@ -274,6 +274,7 @@ Your final response should confirm the files were created and provide a brief su
             cwd=str(self.scripts_dir.parent.parent),  # Project root
             model=self.model,
             env={"CLAUDECODE": "", "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "1800000"},
+            stderr=self._handle_cli_stderr,
         )
 
         final_result: dict[str, Any] | None = None

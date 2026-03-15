@@ -1,5 +1,6 @@
 """Abstract base class for API reverse engineering."""
 
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from .session import SessionManager
 from .sync import FileSyncWatcher, get_available_directory
 from .tui import THEME_PRIMARY, THEME_SECONDARY, ClaudeUI
 from .utils import generate_folder_name, get_docs_dir, get_history_path, get_scripts_dir
+
+DEBUG = os.environ.get("DEBUG", "0") == "1"
 
 
 class BaseEngineer(ABC):
@@ -60,6 +63,24 @@ class BaseEngineer(ABC):
         self.existing_client_path = self._get_existing_client_path()
         self.sync_watcher: FileSyncWatcher | None = None
         self.local_scripts_dir: Path | None = None
+        self._stderr_error_shown = False
+
+    def _handle_cli_stderr(self, line: str) -> None:
+        """Filter CLI subprocess stderr. Shows full output in DEBUG mode, otherwise shows a single clean error."""
+        if DEBUG:
+            self.ui.console.print(f"[dim]  stderr: {line.rstrip()}[/dim]")
+            return
+
+        # Known noisy errors from the CLI control protocol — show once
+        if "Error in hook callback" in line or "Stream closed" in line:
+            if not self._stderr_error_shown:
+                self._stderr_error_shown = True
+                self.ui.console.print("  [dim]![/dim] [dim]cli stream error (set DEBUG=1 for details)[/dim]")
+            return
+
+        # Suppress other common noise (stack traces, source maps)
+        if line.startswith("      at ") or "| " in line[:20]:
+            return
 
     def start_sync(self):
         """Start real-time file sync if enabled."""
@@ -532,16 +553,20 @@ Your OpenAPI spec should be production-ready and suitable for:
             mode_description = f"reverse engineer API calls and generate production-ready {language_name} code that replicates"
             task_description = f"{language_name} API client"
 
-        attempt_log_section = "" if self.output_mode == "docs" else (
-            "If your first attempt doesn't work, analyze what went wrong and try again. "
-            "Document each attempt and what you learned.\n\n"
-            "<attempt_log>\n"
-            "For each attempt (up to 5), document:\n"
-            "- Attempt number\n"
-            "- What approach you tried\n"
-            "- What error or issue occurred (if any)\n"
-            "- What you changed for the next attempt\n"
-            "</attempt_log>\n\n"
+        attempt_log_section = (
+            ""
+            if self.output_mode == "docs"
+            else (
+                "If your first attempt doesn't work, analyze what went wrong and try again. "
+                "Document each attempt and what you learned.\n\n"
+                "<attempt_log>\n"
+                "For each attempt (up to 5), document:\n"
+                "- Attempt number\n"
+                "- What approach you tried\n"
+                "- What error or issue occurred (if any)\n"
+                "- What you changed for the next attempt\n"
+                "</attempt_log>\n\n"
+            )
         )
         after_verb = "documenting" if self.output_mode == "docs" else "testing"
         output_type = "spec" if self.output_mode == "docs" else "code"
