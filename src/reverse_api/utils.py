@@ -26,7 +26,7 @@ def check_for_updates() -> str | None:
         if response.status_code == 200:
             latest = response.json()["info"]["version"]
             if latest != __version__:
-                return f"update available: {__version__} → {latest}  (pip install -U reverse-api-engineer)"
+                return f"update available: {__version__} → {latest}  (pip install -U reverse-api-engineer | uv tool upgrade reverse-api-engineer)"
     except Exception:
         pass
     return None
