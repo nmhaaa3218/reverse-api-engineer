@@ -54,7 +54,7 @@ config_manager = ConfigManager(get_config_path())
 session_manager = SessionManager(get_history_path())
 
 # Mode definitions
-MODES = ["manual", "engineer", "agent", "collector"]
+MODES = ["agent", "manual", "engineer", "collector"]
 MODE_DESCRIPTIONS = {
     "manual": "full pipeline",
     "engineer": "reverse engineer only",
@@ -68,7 +68,7 @@ def prompt_interactive_options(
     url: str | None = None,
     reverse_engineer: bool | None = None,
     model: str | None = None,
-    current_mode: str = "manual",
+    current_mode: str = "agent",
 ) -> dict:
     """Prompt user for essential options interactively (Browgents style).
 
@@ -267,28 +267,14 @@ def prompt_interactive_options(
             "model": model or config_manager.get("claude_code_model", "claude-sonnet-4-6"),
         }
 
-    # Agent mode: similar to manual but uses autonomous browser
+    # Agent mode: autonomous browser, no URL needed (agent navigates on its own)
     if result_mode == "agent":
-        if url is None:
-            try:
-                url = questionary.text(
-                    " > url",
-                    instruction="(Enter for none)",
-                    qmark="",
-                    style=questionary.Style(
-                        [
-                            ("question", f"fg:{THEME_SECONDARY}"),
-                            ("instruction", f"fg:{THEME_DIM} italic"),
-                        ]
-                    ),
-                ).ask()
-                if url is None:  # questionary returns None on Ctrl+C
-                    raise click.Abort()
-            except KeyboardInterrupt:
-                raise click.Abort()
-
         if model is None:
             model = config_manager.get("claude_code_model", "claude-sonnet-4-6")
+
+        mode_color = MODE_COLORS.get("agent", THEME_PRIMARY)
+        console = Console()
+        console.print(f"  [{mode_color}]autonomous[/{mode_color}] [dim]agent will navigate on its own[/dim]")
 
         return {
             "mode": result_mode,
@@ -372,7 +358,7 @@ def repl_loop():
         model = config_manager.get("claude_code_model", "claude-sonnet-4-6")
 
     display_banner(console, sdk=sdk, model=model)
-    console.print("  [dim]shift+tab to cycle modes: manual | engineer | agent | collector[/dim]")
+    console.print("  [dim]shift+tab to cycle modes: agent | manual | engineer | collector[/dim]")
     display_footer(console)
 
     # Show update message if background check has completed
@@ -386,14 +372,14 @@ def repl_loop():
     finally:
         update_executor.shutdown(wait=False)
 
-    current_mode = "manual"
+    current_mode = "agent"
 
     while True:
         try:
             options = prompt_interactive_options(current_mode=current_mode)
 
             # Update current mode for next iteration
-            current_mode = options.get("mode", "manual")
+            current_mode = options.get("mode", "agent")
 
             if "command" in options:
                 cmd = options["command"]
@@ -430,7 +416,7 @@ def repl_loop():
                     console.print(" [dim]Available commands: /settings, /history, /messages, /help, /exit[/dim]")
                 continue
 
-            mode = options.get("mode", "manual")
+            mode = options.get("mode", "agent")
 
             # Handle different modes
             if mode == "engineer":
@@ -1106,9 +1092,9 @@ def handle_help(mode_color=THEME_PRIMARY):
     modes_table.add_column(style=f"{mode_color} bold", justify="left", width=15)
     modes_table.add_column(style="dim", justify="left")
 
+    modes_table.add_row("agent", "Autonomous agent + capture")
     modes_table.add_row("manual", "Full pipeline: browser + reverse engineering")
     modes_table.add_row("engineer", "Reverse engineer only (enter run_id)")
-    modes_table.add_row("agent", "Autonomous agent + capture")
 
     console.print(" [bold white]Modes[/bold white] [dim]Shift+Tab to cycle[/dim]")
     console.print(modes_table)
