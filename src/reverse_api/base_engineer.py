@@ -1,5 +1,6 @@
 """Abstract base class for API reverse engineering."""
 
+import asyncio
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -271,18 +272,20 @@ class BaseEngineer(ABC):
         return answers
 
     async def _prompt_follow_up(self) -> str | None:
-        """Prompt user for a follow-up message. Returns None to finish."""
+        """Prompt user for a follow-up message. Returns None to finish.
+
+        Uses plain input() via executor instead of questionary to avoid
+        terminal state issues after the SDK subprocess exits.
+        """
+        self.ui.console.print()
+        self.ui.console.print(f"  [{THEME_PRIMARY}]─[/{THEME_PRIMARY}] [dim]type a follow-up or press Enter to finish[/dim]")
         try:
-            self.ui.console.print(f"  [{THEME_PRIMARY}]>[/{THEME_PRIMARY}] [dim]type a follow-up or press Enter to finish[/dim]")
-            answer = await questionary.text(
-                "  > ",
-                qmark="",
-                style=questionary.Style([("question", f"fg:{THEME_SECONDARY}")]),
-            ).ask_async()
-            if answer is None or answer.strip() == "":
+            loop = asyncio.get_event_loop()
+            answer = await loop.run_in_executor(None, lambda: input("  > "))
+            if not answer or not answer.strip():
                 return None
             return answer.strip()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             return None
 
     @staticmethod
