@@ -131,6 +131,11 @@ class BaseEngineer(ABC):
             finally:
                 self.sync_watcher = None
 
+    def flush_sync(self):
+        """Flush pending sync events and ensure all files are synced locally."""
+        if self.sync_watcher:
+            self.sync_watcher.flush()
+
     def get_sync_status(self) -> dict | None:
         """Get current sync status."""
         if self.sync_watcher:
@@ -277,6 +282,8 @@ class BaseEngineer(ABC):
         Uses plain input() via executor instead of questionary to avoid
         terminal state issues after the SDK subprocess exits.
         """
+        # Ensure all files are synced locally before waiting for user input
+        self.flush_sync()
         self.ui.console.print()
         self.ui.console.print(f"  [{THEME_PRIMARY}]─[/{THEME_PRIMARY}] [dim]type a follow-up or press Enter to finish[/dim]")
         try:

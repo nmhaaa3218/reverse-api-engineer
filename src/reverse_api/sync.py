@@ -197,6 +197,11 @@ class FileSyncWatcher:
         # Perform final sync of all existing files to ensure nothing is missed
         self._final_sync()
 
+    def flush(self):
+        """Flush pending events and perform a full sync without stopping the watcher."""
+        self.handler.process_pending()
+        self._final_sync()
+
     def _process_loop(self):
         """Background loop to process pending sync events."""
         while not self.stop_event.is_set():
