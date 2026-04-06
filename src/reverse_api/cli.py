@@ -35,6 +35,7 @@ from .tui import (
 )
 from .utils import (
     check_for_updates,
+    discover_scripts,
     generate_folder_name,
     generate_run_id,
     get_actions_path,
@@ -48,6 +49,7 @@ from .utils import (
     parse_codegen_tag,
     parse_engineer_prompt,
     parse_record_only_tag,
+    resolve_run,
 )
 
 setproctitle.setproctitle("reverse-api-engineer")
@@ -2058,6 +2060,138 @@ def show_run(run_id, as_json):
 
     console.print(f"\nRun {rid}")
     console.print(table)
+
+
+@main.command("run")
+@click.argument("identifier")
+@click.argument("script_args", nargs=-1, type=click.UNPROCESSED)
+@click.option("--file", "-f", "file_name", default=None, help="Script filename to run (e.g. api_client.py).")
+@click.option("--ls", "list_scripts", is_flag=True, help="List available scripts without executing.")
+@click.pass_context
+def run_script(ctx, identifier, script_args, file_name, list_scripts):
+    """Run a generated script from a previous run.
+
+    IDENTIFIER is a run ID or search term to match against prompts.
+    Any extra arguments after the identifier are passed to the script.
+
+    Examples:
+
+        reverse-api-engineer run a450e520ca30
+
+        reverse-api-engineer run ashby --ls
+
+        reverse-api-engineer run ashby --file api_client.py
+
+        reverse-api-engineer run ashby -- --org acme --limit 10
+    """
+    import subprocess
+    import sys
+
+    from rich.table import Table
+
+    # Resolve which run
+    run = resolve_run(identifier, session_manager)
+    run_id = run["run_id"]
+    output_dir = config_manager.get("output_dir")
+
+    # Discover scripts (prefer stored path from run metadata, fall back to output_dir)
+    scripts = discover_scripts(run_id, output_dir, run_metadata=run)
+
+    prompt_preview = (run.get("prompt") or "")[:80]
+    ts = (run.get("timestamp") or "")[:19]
+    console.print(f"{run_id}  {ts}  {prompt_preview}", style="dim")
+    if scripts:
+        console.print(f"{scripts[0].parent}", style="dim")
+
+    if not scripts:
+        console.print(f"[red]No Python scripts found for run {run_id}[/red]")
+        raise SystemExit(1)
+
+    # --ls: just list and exit
+    if list_scripts:
+        table = Table(title=f"Scripts in run {run_id}")
+        table.add_column("File", style="cyan")
+        table.add_column("Size", justify="right")
+        table.add_column("Modified")
+        for s in scripts:
+            stat = s.stat()
+            size = f"{stat.st_size:,} B"
+            from datetime import datetime
+
+            modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+            table.add_row(s.name, size, modified)
+        console.print(table)
+        return
+
+    # Select script
+    if file_name:
+        # Exact filename match
+        matching = [s for s in scripts if s.name == file_name]
+        if not matching:
+            available = ", ".join(s.name for s in scripts)
+            raise click.ClickException(f"'{file_name}' not found. Available: {available}")
+        script = matching[0]
+    elif len(scripts) == 1:
+        script = scripts[0]
+    else:
+        # Interactive picker
+        choices = [questionary.Choice(title=s.name, value=s) for s in scripts]
+        script = questionary.select(
+            "Select script to run:",
+            choices=choices,
+        ).ask()
+        if script is None:
+            raise click.Abort()
+
+    # Shared venv at ~/.reverse-api/runs/.venv (with requests pre-installed)
+    from .utils import get_base_output_dir as _get_base
+
+    venv_dir = _get_base(output_dir) / ".venv"
+    venv_bin = "Scripts" if sys.platform == "win32" else "bin"
+    venv_python = venv_dir / venv_bin / ("python.exe" if sys.platform == "win32" else "python")
+    venv_pip = venv_dir / venv_bin / ("pip.exe" if sys.platform == "win32" else "pip")
+
+    if not venv_dir.exists():
+        console.print("Setting up shared venv...", style="dim")
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+        subprocess.run([str(venv_pip), "install", "-q", "requests"], check=True)
+        console.print("Shared venv ready.", style="dim")
+
+    # Install per-run requirements.txt if present
+    scripts_dir = script.parent
+    requirements = scripts_dir / "requirements.txt"
+    if requirements.exists():
+        subprocess.run([str(venv_pip), "install", "-q", "-r", str(requirements)], check=True)
+
+    python_path = str(venv_python)
+
+    # Execute with real-time stdout, capture stderr for import error detection
+    cmd = [python_path, str(script), *script_args]
+    result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
+
+    # Print stderr so the user sees it, then check for missing imports
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+
+    if result.returncode != 0:
+        if "ModuleNotFoundError: No module named" in (result.stderr or ""):
+            import re as _re
+
+            match = _re.search(r"No module named ['\"]([^'\"]+)['\"]", result.stderr)
+            if match:
+                missing = match.group(1).split(".")[0]
+                console.print(f"[yellow]Missing dependency: {missing}[/yellow]")
+
+                install = questionary.confirm(
+                    f"Install '{missing}' and retry?", default=True
+                ).ask()
+                if install:
+                    subprocess.run([str(venv_pip), "install", "-q", missing], check=True)
+                    console.print(f"Installed [green]{missing}[/green]. Retrying...")
+                    result = subprocess.run(cmd)
+                    raise SystemExit(result.returncode)
+
+    raise SystemExit(result.returncode)
 
 
 @main.command("install-host")
