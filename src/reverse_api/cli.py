@@ -2139,26 +2139,27 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
         if script is None:
             raise click.Abort()
 
-    # Venv / dependency management
+    # Shared venv at ~/.reverse-api/runs/.venv (with requests pre-installed)
+    from .utils import get_base_output_dir as _get_base
+
+    venv_dir = _get_base(output_dir) / ".venv"
+    venv_bin = "Scripts" if sys.platform == "win32" else "bin"
+    venv_python = venv_dir / venv_bin / ("python.exe" if sys.platform == "win32" else "python")
+    venv_pip = venv_dir / venv_bin / ("pip.exe" if sys.platform == "win32" else "pip")
+
+    if not venv_dir.exists():
+        console.print("Setting up shared venv...", style="dim")
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+        subprocess.run([str(venv_pip), "install", "-q", "requests"], check=True)
+        console.print("Shared venv ready.", style="dim")
+
+    # Install per-run requirements.txt if present
     scripts_dir = script.parent
     requirements = scripts_dir / "requirements.txt"
-    venv_dir = scripts_dir / ".venv"
-
     if requirements.exists():
-        venv_bin = "Scripts" if sys.platform == "win32" else "bin"
-        python_path = venv_dir / venv_bin / ("python.exe" if sys.platform == "win32" else "python")
-        if not venv_dir.exists():
-            console.print("Installing dependencies...", style="dim")
-            subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
-            pip_path = venv_dir / venv_bin / ("pip.exe" if sys.platform == "win32" else "pip")
-            subprocess.run(
-                [str(pip_path), "install", "-q", "-r", str(requirements)],
-                check=True,
-            )
-            console.print("Dependencies installed.", style="dim")
-        python_path = str(python_path)
-    else:
-        python_path = sys.executable
+        subprocess.run([str(venv_pip), "install", "-q", "-r", str(requirements)], check=True)
+
+    python_path = str(venv_python)
 
     # Execute (with retry on missing imports)
     console.print(f"Running [cyan]{script.name}[/cyan] from run [dim]{run_id}[/dim]")
@@ -2168,7 +2169,6 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
     )
 
     if result.returncode != 0 and "ModuleNotFoundError: No module named" in (result.stderr or ""):
-        # Extract module name from "No module named 'requests'"
         import re as _re
 
         match = _re.search(r"No module named ['\"]([^'\"]+)['\"]", result.stderr)
@@ -2180,28 +2180,15 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
                 f"Install '{missing}' and retry?", default=True
             ).ask()
             if install:
-                # Ensure venv exists
-                venv_bin = "Scripts" if sys.platform == "win32" else "bin"
-                if not venv_dir.exists():
-                    subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
-                pip_path = venv_dir / venv_bin / ("pip.exe" if sys.platform == "win32" else "pip")
-                python_path = str(venv_dir / venv_bin / ("python.exe" if sys.platform == "win32" else "python"))
-
-                # Install the original requirements.txt too if it exists
-                if requirements.exists():
-                    subprocess.run([str(pip_path), "install", "-q", "-r", str(requirements)], check=True)
-                subprocess.run([str(pip_path), "install", "-q", missing], check=True)
+                subprocess.run([str(venv_pip), "install", "-q", missing], check=True)
                 console.print(f"Installed [green]{missing}[/green]. Retrying...")
-
                 result = subprocess.run([python_path, str(script), *script_args])
                 raise SystemExit(result.returncode)
 
-        # If we couldn't parse or user declined, show the original error
         sys.stderr.write(result.stderr)
         sys.stdout.write(result.stdout)
         raise SystemExit(result.returncode)
 
-    # Normal exit — print captured output
     if result.stdout:
         sys.stdout.write(result.stdout)
     if result.stderr:

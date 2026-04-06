@@ -475,77 +475,80 @@ class TestRunCommandNoScripts:
         assert "No run matching" in result.output
 
 
-class TestRunCommandVenv:
-    """Test venv and dependency management."""
+class TestRunCommandSharedVenv:
+    """Test shared venv and dependency management."""
 
-    def test_creates_venv_when_requirements_exist(self, cli_runner, mock_cli_env):
+    def test_creates_shared_venv_on_first_run(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
-        tmp_path = mock_cli_env[0]
-        req = tmp_path / "scripts" / "def789ghi012" / "requirements.txt"
-        req.write_text("requests>=2.28")
-
-        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as mock_sub:
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as mock_sub:
             result = cli_runner.invoke(main, ["run", "def789ghi012"])
 
-        # Should have called subprocess.run 3 times: venv create, pip install, script run
+        # Should have: venv create, pip install requests, script run = 3 calls
         assert mock_sub.call_count == 3
-        calls = mock_sub.call_args_list
-
         # First call: create venv
-        assert "-m" in calls[0][0][0]
-        assert "venv" in calls[0][0][0]
+        assert "venv" in mock_sub.call_args_list[0][0][0]
+        # Second call: pip install requests
+        pip_args = mock_sub.call_args_list[1][0][0]
+        assert "requests" in pip_args
+        # Third call: script runs with venv python
+        assert ".venv" in str(mock_sub.call_args_list[2][0][0][0])
 
-        # Second call: pip install
-        pip_args = calls[1][0][0]
-        assert "pip" in str(pip_args[0])
-        assert "-r" in pip_args
-
-        # Third call: actual script, using venv python
-        python_path = str(calls[2][0][0][0])
-        assert ".venv" in python_path
-
-    def test_skips_venv_when_already_exists(self, cli_runner, mock_cli_env):
+    def test_skips_venv_creation_when_exists(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
         tmp_path = mock_cli_env[0]
-        scripts = tmp_path / "scripts" / "def789ghi012"
-        req = scripts / "requirements.txt"
-        req.write_text("requests>=2.28")
-        # Pre-create venv
-        venv = scripts / ".venv"
+        # Pre-create shared venv
+        venv = tmp_path / ".venv"
         venv.mkdir()
         (venv / "bin").mkdir()
         (venv / "bin" / "python").write_text("#!/bin/sh")
+        (venv / "bin" / "pip").write_text("#!/bin/sh")
 
-        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as mock_sub:
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as mock_sub:
             result = cli_runner.invoke(main, ["run", "def789ghi012"])
 
-        # Should only call subprocess.run once (just the script), no venv/pip
+        # Only the script execution call — no venv create, no pip install
         assert mock_sub.call_count == 1
 
-    def test_no_venv_without_requirements(self, cli_runner, mock_cli_env):
-        from reverse_api.cli import main
-        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as mock_sub:
-            result = cli_runner.invoke(main, ["run", "def789ghi012"])
-
-        # Should call subprocess.run exactly once (just the script, no venv/pip)
-        assert mock_sub.call_count == 1
-        # Should NOT have created a venv inside the scripts dir
-        tmp_path = mock_cli_env[0]
-        venv_path = tmp_path / "scripts" / "def789ghi012" / ".venv"
-        assert not venv_path.exists()
-
-    def test_venv_uses_requirements_txt_path(self, cli_runner, mock_cli_env):
+    def test_installs_per_run_requirements(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
         tmp_path = mock_cli_env[0]
+        # Pre-create shared venv
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "bin").mkdir()
+        (venv / "bin" / "python").write_text("#!/bin/sh")
+        (venv / "bin" / "pip").write_text("#!/bin/sh")
+
         req = tmp_path / "scripts" / "def789ghi012" / "requirements.txt"
-        req.write_text("httpx>=0.25\nbeautifulsoup4")
+        req.write_text("httpx>=0.25")
 
-        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as mock_sub:
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as mock_sub:
             result = cli_runner.invoke(main, ["run", "def789ghi012"])
 
-        # pip install call should reference the requirements.txt
-        pip_call = mock_sub.call_args_list[1][0][0]
+        # pip install -r requirements.txt + script run = 2 calls
+        assert mock_sub.call_count == 2
+        pip_call = mock_sub.call_args_list[0][0][0]
+        assert "-r" in pip_call
         assert str(req) in [str(a) for a in pip_call]
+
+    def test_uses_venv_python_for_execution(self, cli_runner, mock_cli_env):
+        from reverse_api.cli import main
+        tmp_path = mock_cli_env[0]
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "bin").mkdir()
+        (venv / "bin" / "python").write_text("#!/bin/sh")
+        (venv / "bin" / "pip").write_text("#!/bin/sh")
+
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as mock_sub:
+            result = cli_runner.invoke(main, ["run", "def789ghi012"])
+
+        script_call = mock_sub.call_args_list[-1][0][0]
+        assert ".venv" in str(script_call[0])
 
 
 class TestRunCommandImportRetry:
@@ -553,17 +556,33 @@ class TestRunCommandImportRetry:
 
     def test_offers_install_on_import_error(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
-        failed = MagicMock(returncode=1, stdout="", stderr="Traceback (most recent call last):\nModuleNotFoundError: No module named 'requests'")
+        tmp_path = mock_cli_env[0]
+        # Pre-create shared venv so setup is skipped
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "bin").mkdir()
+        (venv / "bin" / "python").write_text("#!/bin/sh")
+        (venv / "bin" / "pip").write_text("#!/bin/sh")
+
+        failed = MagicMock(returncode=1, stdout="", stderr="Traceback:\nModuleNotFoundError: No module named 'pandas'")
+        pip_ok = MagicMock(returncode=0, stdout="", stderr="")
         success = MagicMock(returncode=0, stdout="ok", stderr="")
-        with patch("subprocess.run", side_effect=[failed, MagicMock(returncode=0, stdout="", stderr=""), MagicMock(returncode=0, stdout="", stderr=""), MagicMock(returncode=0, stdout="", stderr=""), success]) as mock_sub:
+        with patch("subprocess.run", side_effect=[failed, pip_ok, success]):
             with patch("questionary.confirm") as mock_confirm:
                 mock_confirm.return_value.ask.return_value = True
                 result = cli_runner.invoke(main, ["run", "def789ghi012"])
-        assert "Missing dependency: requests" in result.output
+        assert "Missing dependency: pandas" in result.output
         assert "Installed" in result.output
 
     def test_user_declines_install(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
+        tmp_path = mock_cli_env[0]
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "bin").mkdir()
+        (venv / "bin" / "python").write_text("#!/bin/sh")
+        (venv / "bin" / "pip").write_text("#!/bin/sh")
+
         failed = MagicMock(returncode=1, stdout="", stderr="ModuleNotFoundError: No module named 'foo'")
         with patch("subprocess.run", return_value=failed):
             with patch("questionary.confirm") as mock_confirm:
@@ -573,6 +592,12 @@ class TestRunCommandImportRetry:
 
     def test_non_import_error_passes_through(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
+        tmp_path = mock_cli_env[0]
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "bin").mkdir()
+        (venv / "bin" / "python").write_text("#!/bin/sh")
+
         failed = MagicMock(returncode=1, stdout="", stderr="TypeError: something else broke")
         with patch("subprocess.run", return_value=failed):
             result = cli_runner.invoke(main, ["run", "def789ghi012"])
@@ -585,6 +610,12 @@ class TestRunCommandOutputMessages:
 
     def test_shows_running_message(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
+        tmp_path = mock_cli_env[0]
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "bin").mkdir()
+        (venv / "bin" / "python").write_text("#!/bin/sh")
+
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
             result = cli_runner.invoke(main, ["run", "def789ghi012"])
         assert "Running" in result.output
@@ -592,17 +623,19 @@ class TestRunCommandOutputMessages:
 
     def test_shows_run_id_in_output(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
+        tmp_path = mock_cli_env[0]
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "bin").mkdir()
+        (venv / "bin" / "python").write_text("#!/bin/sh")
+
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
             result = cli_runner.invoke(main, ["run", "def789ghi012"])
         assert "def789ghi012" in result.output
 
-    def test_installing_deps_message(self, cli_runner, mock_cli_env):
+    def test_shared_venv_setup_message(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
-        tmp_path = mock_cli_env[0]
-        req = tmp_path / "scripts" / "def789ghi012" / "requirements.txt"
-        req.write_text("requests")
-
         with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
             result = cli_runner.invoke(main, ["run", "def789ghi012"])
-        assert "Installing dependencies" in result.output
-        assert "Dependencies installed" in result.output
+        assert "Setting up shared venv" in result.output
+        assert "Shared venv ready" in result.output
