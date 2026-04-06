@@ -43,6 +43,9 @@ def generate_folder_name(prompt: str, sdk: str = None, session_id: str = None) -
         sdk: The SDK to use ("opencode" or "claude"). If None, checks config.
         session_id: Optional OpenCode session ID to reuse. Only used when sdk="opencode".
     """
+    from rich.console import Console
+    from rich.status import Status
+
     # Get SDK from config if not provided
     if sdk is None:
         try:
@@ -64,10 +67,12 @@ def generate_folder_name(prompt: str, sdk: str = None, session_id: str = None) -
             # Already in async context, use fallback to avoid nested asyncio.run
             return _slugify(prompt)
 
-        if sdk == "opencode":
-            return asyncio.run(_generate_folder_name_opencode_async(prompt, session_id))
-        else:
-            return asyncio.run(_generate_folder_name_async(prompt))
+        console = Console()
+        with Status(" [dim]generating folder name...[/dim]", console=console, spinner="dots", spinner_style="dim"):
+            if sdk == "opencode":
+                return asyncio.run(_generate_folder_name_opencode_async(prompt, session_id))
+            else:
+                return asyncio.run(_generate_folder_name_async(prompt))
     except Exception:
         pass
 
@@ -98,11 +103,10 @@ async def _generate_folder_name_async(prompt: str) -> str:
 
     folder_name = ""
 
+    from .prompts import FOLDER_NAME_PROMPT
+
     async with ClaudeSDKClient(options=options) as client:
-        await client.query(
-            f"Generate a short folder name (1-3 words, lowercase, underscores) for this task: {prompt}\n\n"
-            f"Respond with ONLY the folder name, nothing else. Example: apple_jobs_api"
-        )
+        await client.query(FOLDER_NAME_PROMPT.format(prompt=prompt))
 
         async for message in client.receive_response():
             if isinstance(message, AssistantMessage):
@@ -139,10 +143,9 @@ async def _generate_folder_name_opencode_async(prompt: str, session_id: str = No
     opencode_provider = config_manager.get("opencode_provider", "anthropic")
     opencode_model = config_manager.get("opencode_model", "claude-opus-4-6")
 
-    folder_prompt = (
-        f"Generate a short folder name (1-3 words, lowercase, underscores) for this task: {prompt}\n\n"
-        f"Respond with ONLY the folder name, nothing else. Example: apple_jobs_api"
-    )
+    from .prompts import FOLDER_NAME_PROMPT
+
+    folder_prompt = FOLDER_NAME_PROMPT.format(prompt=prompt)
 
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=15.0) as client:
         try:

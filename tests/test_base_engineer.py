@@ -251,57 +251,57 @@ class TestBaseEngineerBuildPrompt:
     def test_python_prompt(self, tmp_path):
         """Python prompt includes Python-specific instructions."""
         eng = self._make_engineer(tmp_path, output_language="python")
-        prompt = eng._build_analysis_prompt()
-        assert "Python script" in prompt
-        assert "requests" in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert "Python script" in system_prompt
+        assert "requests" in system_prompt
 
     def test_javascript_prompt(self, tmp_path):
         """JavaScript prompt includes JS-specific instructions."""
         eng = self._make_engineer(tmp_path, output_language="javascript")
-        prompt = eng._build_analysis_prompt()
-        assert "JavaScript module" in prompt
-        assert "fetch" in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert "JavaScript module" in system_prompt
+        assert "fetch" in system_prompt
 
     def test_typescript_prompt(self, tmp_path):
         """TypeScript prompt includes TS-specific instructions."""
         eng = self._make_engineer(tmp_path, output_language="typescript")
-        prompt = eng._build_analysis_prompt()
-        assert "TypeScript module" in prompt
-        assert "interfaces" in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert "TypeScript module" in system_prompt
+        assert "interfaces" in system_prompt
 
     def test_docs_prompt(self, tmp_path):
         """Docs mode prompt includes OpenAPI instructions."""
         eng = self._make_engineer(tmp_path, output_mode="docs")
-        prompt = eng._build_analysis_prompt()
-        assert "OpenAPI" in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert "OpenAPI" in system_prompt
 
     def test_prompt_includes_har_path(self, tmp_path):
-        """Prompt includes HAR file path."""
+        """User message includes HAR file path."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_analysis_prompt()
-        assert str(eng.har_path) in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert str(eng.har_path) in user_message
 
     def test_prompt_includes_user_prompt(self, tmp_path):
-        """Prompt includes user's original prompt."""
+        """User message includes user's original prompt."""
         eng = self._make_engineer(tmp_path, prompt="capture spotify api")
-        prompt = eng._build_analysis_prompt()
-        assert "capture spotify api" in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert "capture spotify api" in user_message
 
     def test_prompt_includes_additional_instructions(self, tmp_path):
-        """Additional instructions are appended."""
+        """Additional instructions are in user message."""
         eng = self._make_engineer(tmp_path, additional_instructions="Focus on auth")
-        prompt = eng._build_analysis_prompt()
-        assert "Focus on auth" in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert "Focus on auth" in user_message
 
     def test_prompt_includes_tag_context(self, tmp_path):
-        """Prompt includes tag-based workflow context."""
+        """User message includes tag-based workflow context."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_analysis_prompt()
-        assert "Tag-Based Workflows" in prompt
-        assert eng.run_id in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert "Tag-Based Workflows" in user_message
+        assert eng.run_id in user_message
 
     def test_prompt_includes_existing_client_guidance(self, tmp_path):
-        """Prompt tells the agent to keep editing the existing client language."""
+        """User message tells the agent to keep editing the existing client language."""
         har_path = tmp_path / "test.har"
         har_path.touch()
         scripts_dir = tmp_path / "scripts"
@@ -323,10 +323,10 @@ class TestBaseEngineerBuildPrompt:
                             output_dir=str(tmp_path),
                         )
 
-        prompt = eng._build_analysis_prompt()
-        assert str(client_path) in prompt
-        assert "iterative edit" in prompt
-        assert "JavaScript" in prompt
+        system_prompt, user_message = eng._build_prompts()
+        assert str(client_path) in user_message
+        assert "iterative edit" in user_message
+        assert "JavaScript" in user_message
 
 
 class TestBaseEngineerSync:

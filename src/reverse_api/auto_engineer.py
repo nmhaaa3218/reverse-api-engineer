@@ -51,365 +51,54 @@ class ClaudeAutoEngineer(ClaudeEngineer):
         self.mcp_run_id = run_id
         self.agent_provider = agent_provider
 
-    def _build_auto_prompt(self) -> str:
-        """Build autonomous browsing + engineering prompt."""
-        language_name = {
-            "python": "Python",
-            "javascript": "JavaScript",
-            "typescript": "TypeScript",
-        }.get(self.output_language, "Python")
+    def _build_auto_prompts(self) -> tuple[str, str]:
+        """Build (system_prompt, user_message) for auto mode.
+
+        The system prompt contains the agent role, codegen instructions, and output
+        format. The user message contains the mission, workflow, and tool-specific
+        instructions.
+        """
+        from .prompts import load
+
+        language_name = self._get_language_name()
+        codegen_instructions = self._get_codegen_instructions()
 
         client_filename = self._get_client_filename()
-        run_command = self._get_run_command()
+        output_files = self._get_auto_output_files(language_name, client_filename)
 
-        # Build language-specific generation instructions
-        if self.output_language == "javascript":
-            generation_instructions = f"""2. **Generate JavaScript API client** at `{self.scripts_dir}/{client_filename}`:
-   - Use modern JavaScript (ES2022+) with ESM modules (import/export)
-   - Use native `fetch` API for HTTP requests (Node.js 18+ built-in)
-   - If advanced features needed (retries, interceptors), use `axios`
-   - Include proper authentication handling
-   - Create separate async functions for each API endpoint
-   - Add JSDoc comments for type documentation
-   - Include example usage in main section
-   - Make it production-ready and maintainable
-   - If using external dependencies, generate package.json
+        browser_tool_label = (
+            "Chrome DevTools MCP"
+            if self.agent_provider == "chrome-mcp"
+            else "MCP"
+        )
 
-3. **Create documentation** at `{self.scripts_dir}/README.md`:
-   - Explain what APIs were discovered
-   - How authentication works
-   - How to use each function
-   - Requirements: Node.js 18+
-   - Any limitations or requirements
+        system_prompt = load(
+            "auto/system",
+            browser_tool_label=browser_tool_label,
+            language_name=language_name,
+            codegen_instructions=codegen_instructions,
+            output_files=output_files,
+        )
 
-4. **Test your implementation**:
-   - If package.json was generated, first run: npm install
-   - Run with: {run_command}
-   - You have up to 5 attempts to fix any issues
-   - If initial implementation fails, analyze errors and iterate"""
-            output_files = f"""1. `{self.scripts_dir}/{client_filename}` - Production JavaScript API client
-2. `{self.scripts_dir}/README.md` - Documentation with usage examples
-3. `{self.scripts_dir}/package.json` - Only if external dependencies are needed"""
+        template = (
+            "auto/user_chrome_mcp"
+            if self.agent_provider == "chrome-mcp"
+            else "auto/user_playwright"
+        )
 
-        elif self.output_language == "typescript":
-            generation_instructions = f"""2. **Generate TypeScript API client** at `{self.scripts_dir}/{client_filename}`:
-   - Use TypeScript with strict typing enabled
-   - Use ESM modules (import/export syntax)
-   - Use native `fetch` API for HTTP requests (Node.js 18+ built-in)
-   - If advanced features needed, use `axios`
-   - Define TypeScript interfaces for all request/response types
-   - Include proper authentication handling
-   - Create separate async functions for each API endpoint
-   - Export a class-based API client with proper encapsulation
-   - Include example usage in main section
-   - Make it production-ready and maintainable
-   - Generate package.json with tsx, typescript, @types/node
+        template_kwargs = {
+            "prompt": self.prompt,
+            "scripts_dir": str(self.scripts_dir),
+        }
+        if self.agent_provider != "chrome-mcp":
+            template_kwargs["har_path"] = str(self.har_path)
 
-3. **Create documentation** at `{self.scripts_dir}/README.md`:
-   - Explain what APIs were discovered
-   - How authentication works
-   - How to use each function
-   - Requirements: Node.js 18+
-   - Any limitations or requirements
+        user_message = load(template, **template_kwargs)
+        return system_prompt, user_message
 
-4. **Test your implementation**:
-   - Run: npm install && {run_command}
-   - You have up to 5 attempts to fix any issues
-   - If initial implementation fails, analyze errors and iterate"""
-            output_files = f"""1. `{self.scripts_dir}/{client_filename}` - Production TypeScript API client
-2. `{self.scripts_dir}/README.md` - Documentation with usage examples
-3. `{self.scripts_dir}/package.json` - Dependencies and run scripts"""
-
-        else:  # python
-            generation_instructions = f"""2. **Generate Python API client** at `{self.scripts_dir}/{client_filename}`:
-   - Use `requests` library as default (or Playwright if needed for bot detection)
-   - Include proper authentication handling
-   - Create separate functions for each API endpoint
-   - Add type hints, docstrings, error handling
-   - Include example usage in main section
-   - Make it production-ready and maintainable
-
-3. **Create documentation** at `{self.scripts_dir}/README.md`:
-   - Explain what APIs were discovered
-   - How authentication works
-   - How to use each function
-   - Example usage
-   - Any limitations or requirements
-
-4. **Test your implementation**:
-   - After generating the code, test it to ensure it works
-   - Run with: {run_command}
-   - You have up to 5 attempts to fix any issues
-   - If initial implementation fails, analyze errors and iterate"""
-            output_files = f"""1. `{self.scripts_dir}/{client_filename}` - Production Python API client
-2. `{self.scripts_dir}/README.md` - Documentation with usage examples"""
-
-        return f"""You are an autonomous AI agent with browser control via MCP tools.
-        Your mission is to browse, monitor network traffic, and generate production-ready {language_name} API code.
-
-<mission>
-{self.prompt}
-</mission>
-
-<output_directory>
-{self.scripts_dir}
-</output_directory>
-
-## WORKFLOW
-
-Follow this workflow step-by-step:
-
-### Phase 1: BROWSE
-Use browser MCP tools to accomplish the mission goal, here are some of the tools you can use.
-This list is not exhaustive, but it's a good starting point:
-- `browser_navigate` - Navigate to a URL
-- `browser_click` - Click an element
-- `browser_scroll` - Scroll the page
-- `browser_close` - Close the browser
-- `browser_evaluate` - Evaluate JavaScript code
-- `browser_press_key` - Press a key
-- `browser_run_code` - Run Playwright code
-- `browser_type` - Type text into input
-- `browser_wait_for` - Wait for text to appear or disappear or a specified time to pass
-- `browser_snapshot` - Get accessibility tree (useful alternative to screenshots for understanding page structure)
-- `browser_take_screenshot` - Take screenshot for context (IMPORTANT: Prefer element-specific screenshots over full-page to avoid size limits)
-- And other browser MCP tools available
-
-**Screenshot Guidelines:**
-- Screenshots have a 1MB size limit - avoid full-page screenshots when possible
-- Prefer taking element-specific screenshots using CSS selectors
-- If you need context, take multiple smaller screenshots of key areas
-- Use `browser_snapshot()` when you need page structure information without visual details
-
-### Phase 2: MONITOR
-While browsing, periodically call `browser_network_requests()` to monitor API traffic in real-time.
-Keep in mind that you will also have access to the full network traffic when closing the browser:
-- Analyze requests and responses
-- Identify authentication patterns (cookies, tokens, headers)
-- Note API endpoints, methods, parameters
-- Track response structures
-
-### Phase 3: CAPTURE
-When you have sufficient data or have accomplished the mission goal, call `browser_close()` to save the HAR file:
-- This saves all captured network traffic to: {self.har_path}
-- Returns: {{"har_path": str, "resources": {{...}}}}
-
-### Phase 4: REVERSE ENGINEER
-Based on the network traffic you observed, generate production-ready {language_name} code:
-
-1. **Analyze the HAR file** you just captured at {self.har_path}
-   - Read and parse the HAR file
-   - Extract all API calls, authentication, patterns
-
-{generation_instructions}
-
-## IMPORTANT NOTES
-
-- Think step-by-step and narrate your actions as you browse
-- Call `browser_network_requests()` frequently to monitor traffic
-- Don't rush - ensure you capture all necessary API calls before closing browser
-- After generating code, always test it to verify it works
-- Handle bot detection by switching to Playwright with CDP if needed
-- **Screenshot size limit**: Screenshots must be under 1MB. Prefer element-specific screenshots over full-page screenshots to avoid errors
-
-## OUTPUT FILES REQUIRED
-
-{output_files}
-
-Your final response should confirm the files were created and provide a brief summary of:
-- What APIs were discovered
-- The authentication method used
-- Whether the implementation works
-- Any limitations or caveats
-"""
-
-    def _build_chrome_mcp_prompt(self) -> str:
-        """Build autonomous browsing + engineering prompt for Chrome DevTools MCP."""
-        language_name = {
-            "python": "Python",
-            "javascript": "JavaScript",
-            "typescript": "TypeScript",
-        }.get(self.output_language, "Python")
-
-        client_filename = self._get_client_filename()
-        run_command = self._get_run_command()
-
-        if self.output_language == "javascript":
-            generation_instructions = f"""2. **Generate JavaScript API client** at `{self.scripts_dir}/{client_filename}`:
-   - Use modern JavaScript (ES2022+) with ESM modules (import/export)
-   - Use native `fetch` API for HTTP requests (Node.js 18+ built-in)
-   - If advanced features needed (retries, interceptors), use `axios`
-   - Include proper authentication handling
-   - Create separate async functions for each API endpoint
-   - Add JSDoc comments for type documentation
-   - Include example usage in main section
-   - Make it production-ready and maintainable
-   - If using external dependencies, generate package.json
-
-3. **Create documentation** at `{self.scripts_dir}/README.md`:
-   - Explain what APIs were discovered
-   - How authentication works
-   - How to use each function
-   - Requirements: Node.js 18+
-   - Any limitations or requirements
-
-4. **Test your implementation**:
-   - If package.json was generated, first run: npm install
-   - Run with: {run_command}
-   - You have up to 5 attempts to fix any issues
-   - If initial implementation fails, analyze errors and iterate"""
-            output_files = f"""1. `{self.scripts_dir}/{client_filename}` - Production JavaScript API client
-2. `{self.scripts_dir}/README.md` - Documentation with usage examples
-3. `{self.scripts_dir}/package.json` - Only if external dependencies are needed"""
-
-        elif self.output_language == "typescript":
-            generation_instructions = f"""2. **Generate TypeScript API client** at `{self.scripts_dir}/{client_filename}`:
-   - Use TypeScript with strict typing enabled
-   - Use ESM modules (import/export syntax)
-   - Use native `fetch` API for HTTP requests (Node.js 18+ built-in)
-   - If advanced features needed, use `axios`
-   - Define TypeScript interfaces for all request/response types
-   - Include proper authentication handling
-   - Create separate async functions for each API endpoint
-   - Export a class-based API client with proper encapsulation
-   - Include example usage in main section
-   - Make it production-ready and maintainable
-   - Generate package.json with tsx, typescript, @types/node
-
-3. **Create documentation** at `{self.scripts_dir}/README.md`:
-   - Explain what APIs were discovered
-   - How authentication works
-   - How to use each function
-   - Requirements: Node.js 18+
-   - Any limitations or requirements
-
-4. **Test your implementation**:
-   - Run: npm install && {run_command}
-   - You have up to 5 attempts to fix any issues
-   - If initial implementation fails, analyze errors and iterate"""
-            output_files = f"""1. `{self.scripts_dir}/{client_filename}` - Production TypeScript API client
-2. `{self.scripts_dir}/README.md` - Documentation with usage examples
-3. `{self.scripts_dir}/package.json` - Dependencies and run scripts"""
-
-        else:  # python
-            generation_instructions = f"""2. **Generate Python API client** at `{self.scripts_dir}/{client_filename}`:
-   - Use `requests` library as default (or Playwright if needed for bot detection)
-   - Include proper authentication handling
-   - Create separate functions for each API endpoint
-   - Add type hints, docstrings, error handling
-   - Include example usage in main section
-   - Make it production-ready and maintainable
-
-3. **Create documentation** at `{self.scripts_dir}/README.md`:
-   - Explain what APIs were discovered
-   - How authentication works
-   - How to use each function
-   - Example usage
-   - Any limitations or requirements
-
-4. **Test your implementation**:
-   - After generating the code, test it to ensure it works
-   - Run with: {run_command}
-   - You have up to 5 attempts to fix any issues
-   - If initial implementation fails, analyze errors and iterate"""
-            output_files = f"""1. `{self.scripts_dir}/{client_filename}` - Production Python API client
-2. `{self.scripts_dir}/README.md` - Documentation with usage examples"""
-
-        return f"""You are an autonomous AI agent with browser control via Chrome DevTools MCP tools.
-You are connected to the user's REAL Chrome browser with their existing sessions, cookies, and authentication.
-Your mission is to browse, monitor network traffic, and generate production-ready {language_name} API code.
-
-<mission>
-{self.prompt}
-</mission>
-
-<output_directory>
-{self.scripts_dir}
-</output_directory>
-
-## WORKFLOW
-
-Follow this workflow step-by-step:
-
-### Phase 1: BROWSE
-Use Chrome DevTools MCP tools to accomplish the mission goal. Available tools:
-- `navigate_page` - Navigate to a URL (type: "url", url: "..."), go back/forward/reload
-- `click` - Click an element by its uid
-- `fill` - Type text into an input, textarea, or select (uid, value)
-- `fill_form` - Fill multiple form elements at once
-- `hover` - Hover over an element
-- `press_key` - Press a key or combination (e.g. "Enter", "Control+A")
-- `new_page` - Open a new page/tab
-- `list_pages` - List open browser pages
-- `select_page` - Switch to a specific page/tab
-- `wait_for` - Wait for text to appear on the page
-- `take_snapshot` - Get accessibility tree (useful for understanding page structure and element uids)
-- `take_screenshot` - Take a screenshot for visual context
-- `evaluate_script` - Execute JavaScript in the current page
-- `list_console_messages` - Check console for errors/logs
-
-**IMPORTANT: You are controlling the user's actual Chrome browser. Their existing login sessions and cookies are available - you do NOT need to log in to sites where they are already authenticated.**
-
-**Screenshot Guidelines:**
-- Screenshots have a 1MB size limit - avoid full-page screenshots when possible
-- Use `take_snapshot()` when you need page structure information without visual details
-- The snapshot gives you element `uid` values needed for `click`, `fill`, etc.
-
-### Phase 2: MONITOR
-While browsing, periodically call `list_network_requests()` to monitor API traffic in real-time:
-- Filter by type (e.g. "xhr", "fetch") to focus on API calls
-- Analyze request URLs, methods, and response status codes
-- Identify authentication patterns (cookies, tokens, headers)
-- Note API endpoints and parameters
-
-For detailed inspection, use `get_network_request(reqid)` to get:
-- Full request headers and body
-- Full response headers and body
-- Timing information
-
-### Phase 3: CAPTURE
-When you have sufficient data or have accomplished the mission goal:
-1. Call `list_network_requests()` one final time to get all requests
-2. For each important API request, call `get_network_request(reqid)` to capture full details
-3. Pay special attention to: authentication headers, API endpoints, request/response bodies
-
-**There is no HAR file.** You must capture all network data you need using these tools before proceeding.
-
-### Phase 4: REVERSE ENGINEER
-Based on the network traffic you observed, generate production-ready {language_name} code:
-
-1. **Analyze the captured network data**
-   - Review all API calls you collected via list_network_requests and get_network_request
-   - Extract authentication patterns, endpoints, parameters, response structures
-
-{generation_instructions}
-
-## IMPORTANT NOTES
-
-- Think step-by-step and narrate your actions as you browse
-- Call `list_network_requests()` frequently to monitor traffic
-- Use `get_network_request(reqid)` to capture full request/response details for important API calls
-- Don't rush - ensure you capture all necessary API calls before generating code
-- After generating code, always test it to verify it works
-- **Screenshot size limit**: Screenshots must be under 1MB. Prefer `take_snapshot()` over screenshots when possible
-- You have access to the user's real browser sessions - leverage existing auth when possible
-
-## OUTPUT FILES REQUIRED
-
-{output_files}
-
-Your final response should confirm the files were created and provide a brief summary of:
-- What APIs were discovered
-- The authentication method used
-- Whether the implementation works
-- Any limitations or caveats
-"""
-
-    def _get_active_prompt(self) -> str:
-        """Return the appropriate prompt based on agent_provider."""
-        if self.agent_provider == "chrome-mcp":
-            return self._build_chrome_mcp_prompt()
-        return self._build_auto_prompt()
+    def _get_active_prompts(self) -> tuple[str, str]:
+        """Return (system_prompt, user_message) based on agent_provider."""
+        return self._build_auto_prompts()
 
     async def _handle_tool_permission(self, tool_name: str, input_data: dict[str, Any], context: ToolPermissionContext) -> PermissionResultAllow:
         """Handle tool permission requests, with interactive UI for AskUserQuestion."""
@@ -449,16 +138,17 @@ Your final response should confirm the files were created and provide a brief su
         self.ui.header(self.run_id, self.prompt, self.model, mode="agent")
         self.ui.start_analysis()
 
-        active_prompt = self._get_active_prompt()
-        self.message_store.save_prompt(active_prompt)
+        system_prompt, user_message = self._get_active_prompts()
+        self.message_store.save_prompt(user_message)
 
         mcp_name, mcp_config = self._get_mcp_config()
 
         options = ClaudeAgentOptions(
+            system_prompt=system_prompt,
             mcp_servers={mcp_name: mcp_config},
             permission_mode="bypassPermissions",
             can_use_tool=self._handle_tool_permission,
-            cwd=str(self.scripts_dir.parent.parent),  # Project root
+            cwd=str(self.scripts_dir.parent.parent),
             model=self.model,
             env={"CLAUDECODE": ""},
             stderr=self._handle_cli_stderr,
@@ -468,7 +158,7 @@ Your final response should confirm the files were created and provide a brief su
 
         try:
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(active_prompt)
+                await client.query(user_message)
 
                 # Process initial response
                 last_result = await self._process_streaming_response(client)
@@ -534,13 +224,8 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
         self.agent_provider = agent_provider
         self.mcp_name = None
 
-    def _build_auto_prompt(self) -> str:
-        return ClaudeAutoEngineer._build_auto_prompt(self)
-
-    def _get_active_prompt(self) -> str:
-        if self.agent_provider == "chrome-mcp":
-            return ClaudeAutoEngineer._build_chrome_mcp_prompt(self)
-        return self._build_auto_prompt()
+    def _get_active_prompts(self) -> tuple[str, str]:
+        return ClaudeAutoEngineer._build_auto_prompts(self)
 
     def _get_opencode_mcp_config(self) -> dict:
         """Return OpenCode MCP registration payload based on agent_provider."""
@@ -578,8 +263,9 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
         self.opencode_ui.header(self.run_id, self.prompt, self.opencode_model, mode="agent")
         self.opencode_ui.start_analysis()
 
-        active_prompt = self._get_active_prompt()
-        self.message_store.save_prompt(active_prompt)
+        system_prompt, user_message = self._get_active_prompts()
+        active_prompt = f"{system_prompt}\n\n{user_message}"
+        self.message_store.save_prompt(user_message)
 
         try:
             auth = self._get_auth()
@@ -798,11 +484,11 @@ class CopilotAutoEngineer:
         eng.ui.header(eng.run_id, eng.prompt, eng.copilot_model, eng.sdk, mode="agent")
         eng.ui.start_analysis()
 
-        if self.agent_provider == "chrome-mcp":
-            auto_prompt = ClaudeAutoEngineer._build_chrome_mcp_prompt(eng)
-        else:
-            auto_prompt = ClaudeAutoEngineer._build_auto_prompt(eng)
-        eng.message_store.save_prompt(auto_prompt)
+        # CopilotEngineer doesn't have agent_provider; set it temporarily for prompt building
+        eng.agent_provider = self.agent_provider
+        system_prompt, user_message = ClaudeAutoEngineer._build_auto_prompts(eng)
+        auto_prompt = f"{system_prompt}\n\n{user_message}"
+        eng.message_store.save_prompt(user_message)
 
         done_event = asyncio.Event()
         loop = asyncio.get_running_loop()

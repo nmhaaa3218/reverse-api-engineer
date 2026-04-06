@@ -72,8 +72,9 @@ class CopilotEngineer(BaseEngineer):
         self.ui.header(self.run_id, self.prompt, self.copilot_model, self.sdk, mode="engineer")
         self.ui.start_analysis()
 
-        prompt = self._build_analysis_prompt()
-        self.message_store.save_prompt(prompt)
+        system_prompt, user_message = self._build_prompts()
+        prompt = f"{system_prompt}\n\n{user_message}"
+        self.message_store.save_prompt(user_message)
 
         done_event = asyncio.Event()
         loop = asyncio.get_running_loop()

@@ -74,7 +74,8 @@ class Collector:
 
         self.items_path = self._collected_dir / "items.jsonl"
 
-        self.message_store.save_prompt(self._build_collector_prompt())
+        self._system_prompt, self._user_message = self._build_prompts()
+        self.message_store.save_prompt(self._user_message)
 
         result = await self._agent_loop()
 
@@ -83,40 +84,22 @@ class Collector:
 
         return result
 
-    def _build_collector_prompt(self) -> str:
-        """Build system prompt for collector agent."""
-        return f"""You are a web data collection agent.
+    def _build_prompts(self) -> tuple[str, str]:
+        """Build (system_prompt, user_message) for the collector agent."""
+        from .prompts import load
 
-<mission>
-{self.prompt}
-</mission>
-
-<output>
-Save collected items to: {self.items_path}
-Format: JSONL (one JSON object per line, append mode)
-</output>
-
-## Guidelines
-
-- Use WebFetch or WebSearch to find relevant sources
-- Extract structured data with consistent field names across items
-- Include source_url in each item when possible
-- Save items incrementally as you find them
-- Aim for complete data, but partial items are still valuable
-
-## Output Format
-
-Each item should be a single-line JSON object:
-```
-{{"name": "...", "website": "...", "description": "...", "source_url": "..."}}
-```
-
-When complete, briefly summarize what was collected.
-"""
+        system_prompt = load("collector/system")
+        user_message = load(
+            "collector/user",
+            prompt=self.prompt,
+            items_path=str(self.items_path),
+        )
+        return system_prompt, user_message
 
     async def _agent_loop(self) -> dict[str, Any] | None:
         """Run Claude Agent SDK loop."""
         options = ClaudeAgentOptions(
+            system_prompt=self._system_prompt,
             permission_mode="bypassPermissions",
             allowed_tools=[
                 "Read",
@@ -131,7 +114,7 @@ When complete, briefly summarize what was collected.
 
         try:
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(self._build_collector_prompt())
+                await client.query(self._user_message)
 
                 async for message in client.receive_response():
                     # Track usage

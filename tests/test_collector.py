@@ -43,8 +43,8 @@ class TestCollectorInit:
 class TestCollectorBuildPrompt:
     """Test prompt building."""
 
-    def test_build_collector_prompt(self):
-        """Build collector prompt includes mission."""
+    def test_build_prompts(self):
+        """Build collector prompts includes mission in user message."""
         with patch("reverse_api.collector.MessageStore"):
             with patch("reverse_api.collector.CollectorUI"):
                 collector = Collector(
@@ -54,10 +54,11 @@ class TestCollectorBuildPrompt:
                 )
                 collector._collected_dir = Path("/tmp/test")
                 collector.items_path = Path("/tmp/test/items.jsonl")
-                prompt = collector._build_collector_prompt()
-                assert "Y Combinator startups" in prompt
-                assert "items.jsonl" in prompt
-                assert "JSONL" in prompt
+                system_prompt, user_message = collector._build_prompts()
+                assert "Y Combinator startups" in user_message
+                assert "items.jsonl" in user_message
+                assert "JSONL" in user_message
+                assert "web data collection agent" in system_prompt
 
 
 class TestCollectorRun:
@@ -154,6 +155,8 @@ class TestCollectorAgentLoop:
                     model="claude-sonnet-4-6",
                 )
                 collector._collected_dir = tmp_path
+                collector._system_prompt = "system"
+                collector._user_message = "user"
 
                 with patch("reverse_api.collector.ClaudeSDKClient") as mock_sdk:
                     mock_sdk.return_value.__aenter__ = AsyncMock(side_effect=Exception("SDK error"))
@@ -178,6 +181,8 @@ class TestCollectorAgentLoop:
                 )
                 collector._collected_dir = tmp_path
                 collector.items_path = tmp_path / "items.jsonl"
+                collector._system_prompt = "system"
+                collector._user_message = "user"
 
                 from claude_agent_sdk import ResultMessage
                 mock_result = MagicMock(spec=ResultMessage)
@@ -215,6 +220,8 @@ class TestCollectorAgentLoop:
                 )
                 collector._collected_dir = tmp_path
                 collector.items_path = tmp_path / "items.jsonl"
+                collector._system_prompt = "system"
+                collector._user_message = "user"
 
                 from claude_agent_sdk import ResultMessage
                 mock_result = MagicMock(spec=ResultMessage)
@@ -251,6 +258,8 @@ class TestCollectorAgentLoop:
                 )
                 collector._collected_dir = tmp_path
                 collector.items_path = tmp_path / "items.jsonl"
+                collector._system_prompt = "system"
+                collector._user_message = "user"
 
                 from claude_agent_sdk import (
                     AssistantMessage,
@@ -314,6 +323,8 @@ class TestCollectorAgentLoop:
                 )
                 collector._collected_dir = tmp_path
                 collector.items_path = tmp_path / "items.jsonl"
+                collector._system_prompt = "system"
+                collector._user_message = "user"
 
                 from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
 
@@ -363,6 +374,8 @@ class TestCollectorAgentLoop:
                 )
                 collector._collected_dir = tmp_path
                 collector.items_path = tmp_path / "items.jsonl"
+                collector._system_prompt = "system"
+                collector._user_message = "user"
 
                 from claude_agent_sdk import AssistantMessage, ResultMessage
 
@@ -411,6 +424,8 @@ class TestCollectorAgentLoop:
                 )
                 collector._collected_dir = tmp_path
                 collector.items_path = tmp_path / "items.jsonl"
+                collector._system_prompt = "system"
+                collector._user_message = "user"
 
                 mock_client = AsyncMock()
                 mock_client.query = AsyncMock()

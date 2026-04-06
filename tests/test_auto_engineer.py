@@ -113,49 +113,52 @@ class TestClaudeAutoEngineerPrompt:
     def test_python_prompt(self, tmp_path):
         """Python prompt includes correct language references."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_auto_prompt()
-        assert "Python" in prompt
-        assert "requests" in prompt
-        assert "api_client.py" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        combined = sys_p + user_p
+        assert "Python" in combined
+        assert "requests" in sys_p
+        assert "api_client.py" in sys_p
 
     def test_javascript_prompt(self, tmp_path):
         """JavaScript prompt includes JS-specific instructions."""
         eng = self._make_engineer(tmp_path, output_language="javascript")
-        prompt = eng._build_auto_prompt()
-        assert "JavaScript" in prompt
-        assert "fetch" in prompt
-        assert "api_client.js" in prompt
-        assert "package.json" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        combined = sys_p + user_p
+        assert "JavaScript" in combined
+        assert "fetch" in sys_p
+        assert "api_client.js" in sys_p
+        assert "package.json" in sys_p
 
     def test_typescript_prompt(self, tmp_path):
         """TypeScript prompt includes TS-specific instructions."""
         eng = self._make_engineer(tmp_path, output_language="typescript")
-        prompt = eng._build_auto_prompt()
-        assert "TypeScript" in prompt
-        assert "interfaces" in prompt
-        assert "api_client.ts" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        combined = sys_p + user_p
+        assert "TypeScript" in combined
+        assert "interfaces" in sys_p
+        assert "api_client.ts" in sys_p
 
     def test_prompt_includes_mcp_tools(self, tmp_path):
         """Prompt includes MCP browser tool references."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_auto_prompt()
-        assert "browser_navigate" in prompt
-        assert "browser_click" in prompt
-        assert "browser_close" in prompt
-        assert "browser_network_requests" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "browser_navigate" in user_p
+        assert "browser_click" in user_p
+        assert "browser_close" in user_p
+        assert "browser_network_requests" in user_p
 
     def test_prompt_includes_har_path(self, tmp_path):
         """Prompt includes HAR file path."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_auto_prompt()
-        assert "recording.har" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "recording.har" in user_p
 
     def test_prompt_includes_screenshot_guidelines(self, tmp_path):
         """Prompt includes screenshot guidelines."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_auto_prompt()
-        assert "Screenshot" in prompt
-        assert "1MB" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "Screenshot" in sys_p or "Screenshot" in user_p
+        assert "1MB" in sys_p or "1MB" in user_p
 
 
 class TestChromeMcpPrompt:
@@ -178,61 +181,61 @@ class TestChromeMcpPrompt:
     def test_chrome_mcp_prompt_uses_chrome_tools(self, tmp_path):
         """Chrome MCP prompt uses Chrome DevTools tool names."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_chrome_mcp_prompt()
-        assert "navigate_page" in prompt
-        assert "click" in prompt
-        assert "fill" in prompt
-        assert "take_snapshot" in prompt
-        assert "list_network_requests" in prompt
-        assert "get_network_request" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "navigate_page" in user_p
+        assert "click" in user_p
+        assert "fill" in user_p
+        assert "take_snapshot" in user_p
+        assert "list_network_requests" in user_p
+        assert "get_network_request" in user_p
 
     def test_chrome_mcp_prompt_no_har_file(self, tmp_path):
         """Chrome MCP prompt does not reference HAR file saving."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_chrome_mcp_prompt()
-        assert "There is no HAR file" in prompt
-        assert "browser_close" not in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "There is no HAR file" in user_p
+        assert "browser_close" not in user_p
 
     def test_chrome_mcp_prompt_mentions_real_browser(self, tmp_path):
         """Chrome MCP prompt mentions real Chrome browser."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_chrome_mcp_prompt()
-        assert "REAL Chrome browser" in prompt
-        assert "existing sessions" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "REAL Chrome browser" in user_p
+        assert "existing sessions" in user_p
 
     def test_chrome_mcp_prompt_python(self, tmp_path):
         """Chrome MCP Python prompt includes correct language."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._build_chrome_mcp_prompt()
-        assert "Python" in prompt
-        assert "requests" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "Python" in sys_p
+        assert "requests" in sys_p
 
     def test_chrome_mcp_prompt_javascript(self, tmp_path):
         """Chrome MCP JavaScript prompt includes JS instructions."""
         eng = self._make_engineer(tmp_path, output_language="javascript")
-        prompt = eng._build_chrome_mcp_prompt()
-        assert "JavaScript" in prompt
-        assert "fetch" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "JavaScript" in sys_p
+        assert "fetch" in sys_p
 
     def test_chrome_mcp_prompt_typescript(self, tmp_path):
         """Chrome MCP TypeScript prompt includes TS instructions."""
         eng = self._make_engineer(tmp_path, output_language="typescript")
-        prompt = eng._build_chrome_mcp_prompt()
-        assert "TypeScript" in prompt
-        assert "interfaces" in prompt
+        sys_p, user_p = eng._build_auto_prompts()
+        assert "TypeScript" in sys_p
+        assert "interfaces" in sys_p
 
-    def test_get_active_prompt_chrome_mcp(self, tmp_path):
-        """_get_active_prompt returns chrome prompt for chrome-mcp provider."""
+    def test_get_active_prompts_chrome_mcp(self, tmp_path):
+        """_get_active_prompts returns chrome prompt for chrome-mcp provider."""
         eng = self._make_engineer(tmp_path)
-        prompt = eng._get_active_prompt()
-        assert "Chrome DevTools MCP" in prompt
-        assert "navigate_page" in prompt
+        sys_p, user_p = eng._get_active_prompts()
+        assert "Chrome DevTools MCP" in sys_p
+        assert "navigate_page" in user_p
 
-    def test_get_active_prompt_auto(self, tmp_path):
-        """_get_active_prompt returns auto prompt for auto provider."""
+    def test_get_active_prompts_auto(self, tmp_path):
+        """_get_active_prompts returns auto prompt for auto provider."""
         eng = self._make_engineer(tmp_path, agent_provider="auto")
-        prompt = eng._get_active_prompt()
-        assert "browser_navigate" in prompt
+        sys_p, user_p = eng._get_active_prompts()
+        assert "browser_navigate" in user_p
 
 
 class TestChromeMcpConfig:
@@ -305,15 +308,15 @@ class TestOpenCodeChromeMcpConfig:
     def test_opencode_chrome_mcp_prompt(self, tmp_path):
         """OpenCode chrome-mcp uses Chrome DevTools prompt."""
         eng = self._make_engineer(tmp_path, agent_provider="chrome-mcp")
-        prompt = eng._get_active_prompt()
-        assert "Chrome DevTools MCP" in prompt
-        assert "navigate_page" in prompt
+        sys_p, user_p = eng._get_active_prompts()
+        assert "Chrome DevTools MCP" in sys_p
+        assert "navigate_page" in user_p
 
     def test_opencode_auto_prompt(self, tmp_path):
         """OpenCode auto uses Playwright prompt."""
         eng = self._make_engineer(tmp_path, agent_provider="auto")
-        prompt = eng._get_active_prompt()
-        assert "browser_navigate" in prompt
+        sys_p, user_p = eng._get_active_prompts()
+        assert "browser_navigate" in user_p
 
 
 class TestClaudeAutoEngineerAnalyze:
@@ -636,8 +639,8 @@ class TestOpenCodeAutoEngineerInit:
                         assert eng.mcp_run_id == "test123"
                         assert eng.mcp_name is None
 
-    def test_build_auto_prompt_reuses_claude_prompt(self, tmp_path):
-        """OpenCode auto prompt reuses ClaudeAutoEngineer prompt."""
+    def test_get_active_prompts_reuses_claude_prompts(self, tmp_path):
+        """OpenCode auto prompts reuse ClaudeAutoEngineer prompt builder."""
         with patch("reverse_api.auto_engineer.get_har_dir", return_value=tmp_path / "har"):
             with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path / "scripts"):
                 with patch("reverse_api.base_engineer.MessageStore"):
@@ -649,9 +652,9 @@ class TestOpenCodeAutoEngineerInit:
                             opencode_provider="anthropic",
                             opencode_model="claude-opus-4-6",
                         )
-                        prompt = eng._build_auto_prompt()
-                        assert "browser_navigate" in prompt
-                        assert "Python" in prompt
+                        sys_p, user_p = eng._get_active_prompts()
+                        assert "browser_navigate" in user_p
+                        assert "Python" in sys_p
 
 
 class TestOpenCodeAutoEngineerAnalyze:

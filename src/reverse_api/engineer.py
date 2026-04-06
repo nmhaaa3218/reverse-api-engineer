@@ -144,12 +144,15 @@ class ClaudeEngineer(BaseEngineer):
         """
         self.ui.header(self.run_id, self.prompt, self.model, self.sdk, mode="engineer")
         self.ui.start_analysis()
-        self.message_store.save_prompt(self._build_analysis_prompt())
+
+        system_prompt, user_message = self._build_prompts()
+        self.message_store.save_prompt(user_message)
 
         options = ClaudeAgentOptions(
+            system_prompt=system_prompt,
             permission_mode="acceptEdits",
             can_use_tool=self._handle_tool_permission,
-            cwd=str(self.scripts_dir.parent.parent),  # Project root
+            cwd=str(self.scripts_dir.parent.parent),
             model=self.model,
             env={"CLAUDECODE": ""},
             stderr=self._handle_cli_stderr,
@@ -159,7 +162,7 @@ class ClaudeEngineer(BaseEngineer):
 
         try:
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(self._build_analysis_prompt())
+                await client.query(user_message)
 
                 # Process initial response
                 last_result = await self._process_streaming_response(client)

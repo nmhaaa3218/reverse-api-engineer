@@ -139,8 +139,9 @@ class OpenCodeEngineer(BaseEngineer):
         self.opencode_ui.header(self.run_id, self.prompt, self.opencode_model, self.sdk, mode="engineer")
         self.opencode_ui.start_analysis()
 
-        # Save the prompt to messages
-        self.message_store.save_prompt(self._build_analysis_prompt())
+        system_prompt, user_message = self._build_prompts()
+        combined_prompt = f"{system_prompt}\n\n{user_message}"
+        self.message_store.save_prompt(user_message)
 
         try:
             auth = self._get_auth()
@@ -190,7 +191,7 @@ class OpenCodeEngineer(BaseEngineer):
                         "providerID": self.opencode_provider,
                         "modelID": model_id,
                     },
-                    "parts": [{"type": "text", "text": self._build_analysis_prompt()}],
+                    "parts": [{"type": "text", "text": combined_prompt}],
                 }
 
                 prompt_r = await client.post(f"/session/{self._session_id}/message", json=prompt_body)

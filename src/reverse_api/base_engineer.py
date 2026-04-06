@@ -396,14 +396,13 @@ class BaseEngineer(ABC):
             return ""
 
         language_name = self._get_language_name()
-        return f"""
-There is already an existing {language_name} client for this run:
-<existing_client>
-{self.existing_client_path}
-</existing_client>
-
-**IMPORTANT: This is an iterative edit. Update that file in place and keep the implementation in {language_name} unless the user explicitly asks for a fresh rewrite.**
-"""
+        return (
+            f"\nThere is already an existing {language_name} client for this run:\n"
+            f"<existing_client>\n{self.existing_client_path}\n</existing_client>\n\n"
+            f"**IMPORTANT: This is an iterative edit. Update that file in place and "
+            f"keep the implementation in {language_name} unless the user explicitly asks "
+            f"for a fresh rewrite.**\n"
+        )
 
     def _get_client_filename(self) -> str:
         """Return the output filename based on mode."""
@@ -419,195 +418,44 @@ There is already an existing {language_name} client for this run:
             "typescript": "npx tsx api_client.ts",
         }.get(self.output_language, "python api_client.py")
 
-    def _get_language_instructions(self) -> str:
-        """Return language-specific code generation instructions."""
-        client_filename = self._get_client_filename()
-        run_command = self._get_run_command()
+    def _get_codegen_instructions(self) -> str:
+        """Return codegen instructions from the appropriate template partial."""
+        from .prompts import load
 
-        if self.output_language == "javascript":
-            return f"""4. **Generate a JavaScript module** that replicates these API calls with the following requirements:
-   - Use modern JavaScript (ES2022+) with ESM modules (import/export)
-   - Use native `fetch` API for HTTP requests (Node.js 18+ built-in)
-   - If advanced features are needed (retries, interceptors), use `axios` instead
-   - Include proper authentication handling (sessions, headers, tokens)
-   - Create separate async functions for each distinct API endpoint
-   - Use JSDoc comments for type documentation on all functions
-   - Implement proper error handling with try-catch blocks
-   - Create custom Error classes for API errors
-   - Add console logging for debugging purposes
-   - Make the code production-ready and maintainable
-   - Include a main section with example usage (wrapped in async IIFE or top-level await)
-   - If using external dependencies (like axios), generate a package.json with:
-     - "type": "module" for ESM support
-     - Required dependencies
-     - scripts: {{ "start": "node api_client.js" }}
-
-5. **Create documentation**:
-   - Generate a README.md file that explains:
-     - What APIs were discovered
-     - How authentication works
-     - How to use each function
-     - Example usage
-     - Requirements: Node.js 18+
-     - Any limitations or requirements
-
-6. **Test your implementation**:
-   - If package.json was generated, first run: npm install
-   - Run with: {run_command}
-   - You have up to 5 attempts to fix any issues
-   - If the initial implementation fails, analyze the error and try again
-
-After your analysis, generate the files:
-
-1. Save the JavaScript module to: {self.scripts_dir}/{client_filename}
-2. Save the documentation to: {self.scripts_dir}/README.md
-3. If external dependencies are used, save: {self.scripts_dir}/package.json"""
-
-        elif self.output_language == "typescript":
-            return f"""4. **Generate a TypeScript module** that replicates these API calls with the following requirements:
-   - Use TypeScript with strict typing enabled
-   - Use ESM modules (import/export syntax)
-   - Use native `fetch` API for HTTP requests (Node.js 18+ built-in)
-   - If advanced features are needed (retries, interceptors), use `axios` instead
-   - Define TypeScript interfaces for all request/response types
-   - Include proper authentication handling (sessions, headers, tokens)
-   - Create separate async functions for each distinct API endpoint
-   - Use async/await patterns throughout
-   - Export a class-based API client with proper encapsulation
-   - Implement proper error handling with custom error types
-   - Add console logging for debugging purposes
-   - Make the code production-ready and maintainable
-   - Include a main section with example usage
-   - Generate a package.json with:
-     - "type": "module" for ESM support
-     - devDependencies: tsx, typescript, @types/node
-     - dependencies: axios (only if used)
-     - scripts: {{ "start": "npx tsx api_client.ts" }}
-
-5. **Create documentation**:
-   - Generate a README.md file that explains:
-     - What APIs were discovered
-     - How authentication works
-     - How to use each function
-     - Example usage
-     - Requirements: Node.js 18+
-     - Any limitations or requirements
-
-6. **Test your implementation**:
-   - Run: npm install && {run_command}
-   - npx auto-downloads tsx if not installed
-   - You have up to 5 attempts to fix any issues
-   - If the initial implementation fails, analyze the error and try again
-
-After your analysis, generate the files:
-
-1. Save the TypeScript module to: {self.scripts_dir}/{client_filename}
-2. Save the documentation to: {self.scripts_dir}/README.md
-3. Save the package.json to: {self.scripts_dir}/package.json"""
-
-        else:  # python (default)
-            return f"""4. **Generate a Python script** that replicates these API calls with the following requirements:
-   - Use the `requests` library as the default choice
-   - Include proper authentication handling (sessions, headers, tokens)
-   - Create separate functions for each distinct API endpoint
-   - Include type hints for all function parameters and return values
-   - Write comprehensive docstrings for each function
-   - Implement proper error handling with try-except blocks
-   - Add logging for debugging purposes
-   - Make the code production-ready and maintainable
-   - Include a main section with example usage
-
-5. **Create documentation**:
-   - Generate a README.md file that explains:
-     - What APIs were discovered
-     - How authentication works
-     - How to use each function
-     - Example usage
-     - Any limitations or requirements
-
-6. **Test your implementation**:
-   - After generating the code, test it to ensure it works
-   - Run with: {run_command}
-   - You have up to 5 attempts to fix any issues
-   - If the initial implementation fails, analyze the error and try again
-   - Keep in mind that some websites have bot detection mechanisms
-
-7. **Handle bot detection**:
-   - If you encounter bot detection, CAPTCHA, or anti-scraping measures with `requests`
-   - Consider switching to Playwright with CDP (Chrome DevTools Protocol) or using httpcloak
-   - Use the real user browser context to bypass detection
-   - Maintain the same code quality standards regardless of approach
-
-After your analysis, generate the files:
-
-1. Save the Python script to: {self.scripts_dir}/{client_filename}
-2. Save the documentation to: {self.scripts_dir}/README.md"""
-
-    def _get_docs_instructions(self) -> str:
-        """Return OpenAPI documentation generation instructions."""
-        return f"""4. **Generate an OpenAPI 3.0 specification** that documents these API endpoints:
-   - Use OpenAPI 3.0.0 format (https://swagger.io/specification/)
-   - Include all discovered endpoints with:
-     - Correct HTTP methods (GET, POST, PUT, DELETE, etc.)
-     - Path parameters and query parameters
-     - Request body schemas (JSON Schema format)
-     - Response schemas for common status codes (200, 400, 401, 404, 500)
-     - Authentication/security schemes (API keys, Bearer tokens, OAuth, etc.)
-   - Organize endpoints into logical tags/groups (e.g., "Users", "Products", "Orders")
-   - Infer meaningful descriptions for:
-     - Each endpoint's purpose (what it does)
-     - Parameters (what they control)
-     - Response fields (what they represent)
-   - Include examples where patterns are clear from the HAR data
-   - Use JSON Schema $ref for shared components/schemas
-   - Document authentication requirements in security schemes
-   - Add a servers array with the base URL from the HAR file
-
-5. **Enhance documentation with AI inference**:
-   - Analyze request/response patterns to infer parameter types and constraints
-   - Group related endpoints into logical operations
-   - Generate human-readable descriptions (not just field names)
-   - Identify required vs optional parameters based on HAR observations
-   - Add example values from actual captured requests
-   - Document error responses observed in the HAR
-   - Note rate limiting headers if present
-   - Describe authentication flow if multi-step
-
-6. **Create supplementary documentation**:
-   - Generate a README.md file that explains:
-     - API overview and purpose
-     - Authentication method and how to obtain credentials
-     - Base URL and versioning
-     - Common use cases with example requests
-     - Rate limiting information (if observed)
-     - Any special headers or requirements
-     - Link to view the OpenAPI spec (e.g., in Swagger UI)
-
-After your analysis, generate the files:
-
-1. Save the OpenAPI spec to: {self.scripts_dir}/openapi.json
-2. Save the README to: {self.scripts_dir}/README.md
-3. Optionally create: {self.scripts_dir}/examples.md with curl examples
-
-Your OpenAPI spec should be production-ready and suitable for:
-- API documentation portals (Swagger UI, Redoc, Stoplight)
-- Code generation (OpenAPI Generator, swagger-codegen)
-- API testing (Postman, Insomnia)
-- Contract testing and validation"""
-
-    def _build_analysis_prompt(self) -> str:
-        """Build the prompt for analyzing the HAR file."""
         if self.output_mode == "docs":
+            return load("partials/_docs_instructions", scripts_dir=str(self.scripts_dir))
+
+        return load(
+            f"partials/_language_{self.output_language}",
+            scripts_dir=str(self.scripts_dir),
+            client_filename=self._get_client_filename(),
+            run_command=self._get_run_command(),
+        )
+
+    def _build_prompts(self) -> tuple[str, str]:
+        """Build the (system_prompt, user_message) pair for analysis.
+
+        Returns:
+            Tuple of (system_prompt_text, user_message_text).
+        """
+        from .prompts import load
+
+        is_docs = self.output_mode == "docs"
+        language_name = self._get_language_name()
+
+        if is_docs:
             mode_description = "generate an OpenAPI 3.0 specification documenting"
             task_description = "OpenAPI documentation"
         else:
-            language_name = self._get_language_name()
-            mode_description = f"reverse engineer API calls and generate production-ready {language_name} code that replicates"
+            mode_description = (
+                f"reverse engineer API calls and generate production-ready "
+                f"{language_name} code that replicates"
+            )
             task_description = f"{language_name} API client"
 
         attempt_log_section = (
             ""
-            if self.output_mode == "docs"
+            if is_docs
             else (
                 "If your first attempt doesn't work, analyze what went wrong and try again. "
                 "Document each attempt and what you learned.\n\n"
@@ -620,116 +468,65 @@ Your OpenAPI spec should be production-ready and suitable for:
                 "</attempt_log>\n\n"
             )
         )
-        after_verb = "documenting" if self.output_mode == "docs" else "testing"
-        output_type = "spec" if self.output_mode == "docs" else "code"
-        quality_check = "The completeness and accuracy of the OpenAPI spec" if self.output_mode == "docs" else "Whether the implementation works"
 
-        base_prompt = f"""You are tasked with analyzing a HAR (HTTP Archive) file to {mode_description} those calls.
+        scratchpad_extra = (
+            ""
+            if is_docs
+            else "- Decide whether `requests` will be sufficient or if Playwright is needed"
+        )
 
-Here is the HAR file path you need to analyze:
-<har_path>
-{self.har_path}
-</har_path>
+        system_prompt = load(
+            "engineer/system",
+            mode_description=mode_description,
+            task_description=task_description,
+            codegen_instructions=self._get_codegen_instructions(),
+            scratchpad_extra=scratchpad_extra,
+            attempt_log_section=attempt_log_section,
+            after_verb="documenting" if is_docs else "testing",
+            quality_check=(
+                "The completeness and accuracy of the OpenAPI spec"
+                if is_docs
+                else "Whether the implementation works"
+            ),
+            output_type="spec" if is_docs else "code",
+        )
 
-Here is the original user prompt with context about what they're trying to accomplish:
-<user_prompt>
-{self.prompt}
-</user_prompt>
+        additional_instructions = (
+            f"\n\nAdditional instructions:\n{self.additional_instructions}"
+            if self.additional_instructions
+            else ""
+        )
 
-Here is the output directory where you should save your generated files:
-<output_dir>
-{self.scripts_dir}
-</output_dir>
-{self._get_existing_client_guidance()}
+        user_message = load(
+            "engineer/user",
+            har_path=str(self.har_path),
+            prompt=self.prompt,
+            scripts_dir=str(self.scripts_dir),
+            existing_client_guidance=self._get_existing_client_guidance(),
+            additional_instructions=additional_instructions,
+            tag_extra="@docs" if is_docs else "",
+            tag_mode_label="Documentation" if is_docs else "Re-engineer",
+            run_id=self.run_id,
+            har_parent=str(self.har_path.parent),
+            existing_label="docs" if is_docs else "scripts",
+            messages_path=str(self.message_store.messages_path.parent),
+            is_fresh=str(self.is_fresh).lower(),
+            existing_artifact="documentation" if is_docs else "script",
+        )
 
-**IMPORTANT: You have access to the AskUserQuestion tool to ask clarifying questions during your analysis.**
-Use this tool when you need to clarify functional requirements, prioritize features, choose between implementation approaches, or gather any other information that would help you generate better {task_description}.
+        return system_prompt, user_message
 
-The AskUserQuestion tool supports:
-- **Multiple questions** in a single call (list of question objects)
-- **Single-select** questions with predefined options (user picks one, or types a custom answer)
-- **Multi-select** questions with predefined options (user picks multiple, or adds a custom answer)
-- **Free-form** questions with no options (user types their answer freely)
-
-Use free-form questions (empty options list) for open-ended input like URLs, credentials, descriptions, or any question where predefined choices don't make sense.
-
-Your task is to:
-
-1. **Read and analyze the HAR file** to understand all API calls that were captured. Look for:
-   - HTTP methods (GET, POST, PUT, DELETE, etc.)
-   - Request URLs and endpoints
-   - Request headers (especially authentication-related ones)
-   - Request bodies and parameters
-   - Response structures
-   - Response status codes
-
-2. **Identify authentication patterns** such as:
-   - Cookies and session tokens
-   - Authorization headers (Bearer tokens, API keys, etc.)
-   - CSRF tokens or other security mechanisms
-   - Custom authentication headers
-
-3. **Extract request/response patterns** for each distinct endpoint:
-   - Required vs optional parameters
-   - Data formats (JSON, form data, etc.)
-   - Query parameters vs body parameters
-   - Response data structures
-
-4. **Ask clarifying questions using AskUserQuestion** if needed:
-   - When multiple authentication methods are found, ask which to prioritize
-   - If uncertain about feature priorities, ask the user
-   - When implementation approaches are ambiguous, ask for preferences
-   - Use the tool for any clarifications that would improve the final output
-
-{self._get_docs_instructions() if self.output_mode == "docs" else self._get_language_instructions()}
-
-Before generating your output, use a scratchpad to plan your approach:
-
-<scratchpad>
-In your scratchpad:
-- Summarize the key API endpoints found in the HAR file
-- Note the authentication mechanism being used
-- Identify any patterns or commonalities between requests
-- Plan the structure of your {task_description}
-- Consider potential issues (rate limiting, versioning, etc.)
-{"- Decide whether `requests` will be sufficient or if Playwright is needed" if self.output_mode != "docs" else ""}
-- Identify any ambiguities or questions you should ask the user using AskUserQuestion
-</scratchpad>
-
-{attempt_log_section}After {after_verb}, provide your final response with:
-- A summary of the APIs discovered
-- The authentication method used
-- {quality_check}
-- Any limitations or caveats
-- The paths to the generated files
-
-Your final output should confirm that the files have been created and provide a brief summary of what was accomplished.
-Do not include the full {output_type} in your response - just confirm the files were saved and summarize the key findings.
-"""
-        if self.additional_instructions:
-            base_prompt += f"\n\nAdditional instructions:\n{self.additional_instructions}"
-
-        tag_context = f"""
-## Tag-Based Workflows
-
-This session uses tag-based context loading:
-
-- **@id <run_id>** {"@docs" if self.output_mode == "docs" else ""}: {"Documentation" if self.output_mode == "docs" else "Re-engineer"} mode active
-  - Target run: {self.run_id}
-  - HAR location: {self.har_path.parent}
-  - Existing {"docs" if self.output_mode == "docs" else "scripts"}: {self.scripts_dir}
-  - Message history: {self.message_store.messages_path.parent} (available for reference if needed)
-  - Fresh mode: {str(self.is_fresh).lower()}
-
-By default, treat this as an iterative refinement. The user's prompt describes
-changes or improvements to make to the existing {"documentation" if self.output_mode == "docs" else "script"}. If fresh mode is enabled,
-ignore previous implementation and start from scratch.
-
-Note: Full message history is available at the messages path above if you need
-to understand previous context, but it is not automatically loaded into this
-conversation.
-"""
-        return base_prompt + tag_context
+    def _get_auto_output_files(self, language_name: str, client_filename: str) -> str:
+        """Return the output files list for auto mode prompts."""
+        base = (
+            f"1. `{self.scripts_dir}/{client_filename}` - Production {language_name} API client\n"
+            f"2. `{self.scripts_dir}/README.md` - Documentation with usage examples"
+        )
+        if self.output_language == "javascript":
+            return base + f"\n3. `{self.scripts_dir}/package.json` - Only if external dependencies are needed"
+        elif self.output_language == "typescript":
+            return base + f"\n3. `{self.scripts_dir}/package.json` - Dependencies and run scripts"
+        return base
 
     @abstractmethod
     async def analyze_and_generate(self) -> dict[str, Any] | None:
