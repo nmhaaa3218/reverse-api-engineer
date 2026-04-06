@@ -2105,8 +2105,6 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
 
     if not scripts:
         console.print(f"[red]No Python scripts found for run {run_id}[/red]")
-        prompt_preview = (run.get("prompt") or "")[:60]
-        console.print(f"  prompt: {prompt_preview}", style="dim")
         raise SystemExit(1)
 
     # --ls: just list and exit
@@ -2167,37 +2165,30 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
 
     python_path = str(venv_python)
 
-    # Execute (with retry on missing imports)
-    result = subprocess.run(
-        [python_path, str(script), *script_args],
-        capture_output=True, text=True,
-    )
+    # Execute with real-time output
+    cmd = [python_path, str(script), *script_args]
+    result = subprocess.run(cmd)
 
-    if result.returncode != 0 and "ModuleNotFoundError: No module named" in (result.stderr or ""):
-        import re as _re
+    # On failure, check if it's a missing import and offer to install
+    if result.returncode != 0:
+        probe = subprocess.run(cmd, capture_output=True, text=True)
+        if "ModuleNotFoundError: No module named" in (probe.stderr or ""):
+            import re as _re
 
-        match = _re.search(r"No module named ['\"]([^'\"]+)['\"]", result.stderr)
-        if match:
-            missing = match.group(1)
-            console.print(f"[yellow]Missing dependency: {missing}[/yellow]")
+            match = _re.search(r"No module named ['\"]([^'\"]+)['\"]", probe.stderr)
+            if match:
+                missing = match.group(1)
+                console.print(f"[yellow]Missing dependency: {missing}[/yellow]")
 
-            install = questionary.confirm(
-                f"Install '{missing}' and retry?", default=True
-            ).ask()
-            if install:
-                subprocess.run([str(venv_pip), "install", "-q", missing], check=True)
-                console.print(f"Installed [green]{missing}[/green]. Retrying...")
-                result = subprocess.run([python_path, str(script), *script_args])
-                raise SystemExit(result.returncode)
+                install = questionary.confirm(
+                    f"Install '{missing}' and retry?", default=True
+                ).ask()
+                if install:
+                    subprocess.run([str(venv_pip), "install", "-q", missing], check=True)
+                    console.print(f"Installed [green]{missing}[/green]. Retrying...")
+                    result = subprocess.run(cmd)
+                    raise SystemExit(result.returncode)
 
-        sys.stderr.write(result.stderr)
-        sys.stdout.write(result.stdout)
-        raise SystemExit(result.returncode)
-
-    if result.stdout:
-        sys.stdout.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
     raise SystemExit(result.returncode)
 
 

@@ -557,17 +557,18 @@ class TestRunCommandImportRetry:
     def test_offers_install_on_import_error(self, cli_runner, mock_cli_env):
         from reverse_api.cli import main
         tmp_path = mock_cli_env[0]
-        # Pre-create shared venv so setup is skipped
         venv = tmp_path / ".venv"
         venv.mkdir()
         (venv / "bin").mkdir()
         (venv / "bin" / "python").write_text("#!/bin/sh")
         (venv / "bin" / "pip").write_text("#!/bin/sh")
 
-        failed = MagicMock(returncode=1, stdout="", stderr="Traceback:\nModuleNotFoundError: No module named 'pandas'")
+        # 1st call: real-time run fails, 2nd: probe with captured stderr, 3rd: pip install, 4th: retry succeeds
+        first_run = MagicMock(returncode=1)
+        probe = MagicMock(returncode=1, stdout="", stderr="ModuleNotFoundError: No module named 'pandas'")
         pip_ok = MagicMock(returncode=0, stdout="", stderr="")
-        success = MagicMock(returncode=0, stdout="ok", stderr="")
-        with patch("subprocess.run", side_effect=[failed, pip_ok, success]):
+        retry_ok = MagicMock(returncode=0)
+        with patch("subprocess.run", side_effect=[first_run, probe, pip_ok, retry_ok]):
             with patch("questionary.confirm") as mock_confirm:
                 mock_confirm.return_value.ask.return_value = True
                 result = cli_runner.invoke(main, ["run", "def789ghi012"])
@@ -583,8 +584,9 @@ class TestRunCommandImportRetry:
         (venv / "bin" / "python").write_text("#!/bin/sh")
         (venv / "bin" / "pip").write_text("#!/bin/sh")
 
-        failed = MagicMock(returncode=1, stdout="", stderr="ModuleNotFoundError: No module named 'foo'")
-        with patch("subprocess.run", return_value=failed):
+        first_run = MagicMock(returncode=1)
+        probe = MagicMock(returncode=1, stdout="", stderr="ModuleNotFoundError: No module named 'foo'")
+        with patch("subprocess.run", side_effect=[first_run, probe]):
             with patch("questionary.confirm") as mock_confirm:
                 mock_confirm.return_value.ask.return_value = False
                 result = cli_runner.invoke(main, ["run", "def789ghi012"])
@@ -598,11 +600,11 @@ class TestRunCommandImportRetry:
         (venv / "bin").mkdir()
         (venv / "bin" / "python").write_text("#!/bin/sh")
 
-        failed = MagicMock(returncode=1, stdout="", stderr="TypeError: something else broke")
-        with patch("subprocess.run", return_value=failed):
+        first_run = MagicMock(returncode=1)
+        probe = MagicMock(returncode=1, stdout="", stderr="TypeError: something else broke")
+        with patch("subprocess.run", side_effect=[first_run, probe]):
             result = cli_runner.invoke(main, ["run", "def789ghi012"])
         assert result.exit_code == 1
-        assert "TypeError" in result.output
 
 
 class TestRunCommandOutputMessages:
