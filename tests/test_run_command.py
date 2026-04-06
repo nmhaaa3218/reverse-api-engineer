@@ -239,6 +239,51 @@ class TestDiscoverScripts:
         for s in scripts:
             assert "__pycache__" not in str(s)
 
+    def test_empty_run_id_raises(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            discover_scripts("")
+
+    def test_invalid_run_id_raises(self):
+        with pytest.raises(ValueError, match="Invalid run_id"):
+            discover_scripts("../../../etc")
+
+    def test_too_long_run_id_raises(self):
+        with pytest.raises(ValueError, match="too long"):
+            discover_scripts("a" * 65)
+
+
+class TestDiscoverScriptsRunMetadata:
+    """Test discover_scripts with run_metadata (stored path) fallback."""
+
+    def test_uses_stored_path_from_metadata(self, tmp_path):
+        """Prefers the stored script_path from run metadata over output_dir."""
+        stored_dir = tmp_path / "old_output" / "scripts" / "run1"
+        stored_dir.mkdir(parents=True)
+        (stored_dir / "api_client.py").write_text("print('stored')")
+
+        metadata = {"paths": {"script_path": str(stored_dir / "api_client.py")}}
+        # output_dir points somewhere else entirely
+        scripts = discover_scripts("run1", output_dir=str(tmp_path / "new_output"), run_metadata=metadata)
+        assert len(scripts) == 1
+        assert scripts[0].parent == stored_dir
+
+    def test_falls_back_to_output_dir_when_stored_missing(self, tmp_path):
+        """Falls back to output_dir when stored path doesn't exist."""
+        fallback_dir = tmp_path / "scripts" / "run1"
+        fallback_dir.mkdir(parents=True)
+        (fallback_dir / "api_client.py").write_text("print('fallback')")
+
+        metadata = {"paths": {"script_path": "/nonexistent/path/api_client.py"}}
+        with patch("reverse_api.utils.get_base_output_dir", return_value=tmp_path):
+            scripts = discover_scripts("run1", run_metadata=metadata)
+        assert len(scripts) == 1
+
+    def test_falls_back_when_no_metadata(self, scripts_dir, tmp_path):
+        """Works without run_metadata (backwards compatible)."""
+        with patch("reverse_api.utils.get_base_output_dir", return_value=tmp_path):
+            scripts = discover_scripts("abc123def456", run_metadata=None)
+        assert len(scripts) >= 1
+
 
 # ---------------------------------------------------------------------------
 # CLI `run` command integration tests (using Click's CliRunner)

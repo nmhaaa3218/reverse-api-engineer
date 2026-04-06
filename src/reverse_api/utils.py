@@ -726,18 +726,44 @@ def resolve_run(identifier: str, session_manager) -> dict:
     return selected
 
 
-def discover_scripts(run_id: str, output_dir: str | None = None) -> list[Path]:
+def discover_scripts(run_id: str, output_dir: str | None = None, run_metadata: dict | None = None) -> list[Path]:
     """Find all executable Python scripts in a run's script directory.
+
+    Tries the stored script path from run metadata first, then falls back
+    to the current output_dir config.
 
     Args:
         run_id: The run identifier
         output_dir: Optional custom output directory
+        run_metadata: Optional run dict with paths.script_path to resolve from
 
     Returns:
         Sorted list of .py file Paths (excludes __pycache__, .venv, __init__.py)
+
+    Raises:
+        ValueError: If run_id contains invalid characters
     """
-    base_dir = get_base_output_dir(output_dir)
-    scripts_dir = base_dir / "scripts" / run_id
+    # Validate run_id (same rules as get_scripts_dir)
+    if not run_id:
+        raise ValueError("run_id cannot be empty")
+    if not re.match(r"^[a-zA-Z0-9_-]+$", run_id):
+        raise ValueError(f"Invalid run_id: {run_id}")
+    if len(run_id) > 64:
+        raise ValueError(f"run_id too long: {len(run_id)} characters (max 64)")
+
+    # Try stored path from run metadata first
+    scripts_dir = None
+    if run_metadata:
+        script_path = run_metadata.get("paths", {}).get("script_path", "")
+        if script_path:
+            stored_dir = Path(script_path).parent
+            if stored_dir.exists():
+                scripts_dir = stored_dir
+
+    # Fall back to current output_dir
+    if scripts_dir is None:
+        base_dir = get_base_output_dir(output_dir)
+        scripts_dir = base_dir / "scripts" / run_id
 
     if not scripts_dir.exists():
         return []
@@ -749,8 +775,6 @@ def discover_scripts(run_id: str, output_dir: str | None = None) -> list[Path]:
     for f in scripts_dir.iterdir():
         if f.is_file() and f.suffix == ".py" and f.name not in exclude_files:
             scripts.append(f)
-        # Don't recurse into excluded dirs
-    # Also skip files inside excluded subdirs (shouldn't happen with iterdir but defensive)
     scripts = [s for s in scripts if not any(part in exclude_dirs for part in s.parts)]
 
     return sorted(scripts, key=lambda p: p.name)

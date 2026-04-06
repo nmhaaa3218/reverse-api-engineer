@@ -2094,8 +2094,8 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
     run_id = run["run_id"]
     output_dir = config_manager.get("output_dir")
 
-    # Discover scripts
-    scripts = discover_scripts(run_id, output_dir)
+    # Discover scripts (prefer stored path from run metadata, fall back to output_dir)
+    scripts = discover_scripts(run_id, output_dir, run_metadata=run)
 
     if not scripts:
         console.print(f"[red]No Python scripts found for run {run_id}[/red]")
@@ -2145,11 +2145,12 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
     venv_dir = scripts_dir / ".venv"
 
     if requirements.exists():
-        python_path = venv_dir / "bin" / "python"
+        venv_bin = "Scripts" if sys.platform == "win32" else "bin"
+        python_path = venv_dir / venv_bin / ("python.exe" if sys.platform == "win32" else "python")
         if not venv_dir.exists():
             console.print("Installing dependencies...", style="dim")
             subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
-            pip_path = venv_dir / "bin" / "pip"
+            pip_path = venv_dir / venv_bin / ("pip.exe" if sys.platform == "win32" else "pip")
             subprocess.run(
                 [str(pip_path), "install", "-q", "-r", str(requirements)],
                 check=True,
