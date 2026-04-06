@@ -2097,6 +2097,12 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
     # Discover scripts (prefer stored path from run metadata, fall back to output_dir)
     scripts = discover_scripts(run_id, output_dir, run_metadata=run)
 
+    # Show run info after resolution
+    prompt_preview = (run.get("prompt") or "")[:80]
+    console.print(f"run {run_id} | {prompt_preview}", style="dim")
+    if scripts:
+        console.print(f"  {scripts[0].parent}", style="dim")
+
     if not scripts:
         console.print(f"[red]No Python scripts found for run {run_id}[/red]")
         prompt_preview = (run.get("prompt") or "")[:60]
@@ -2162,9 +2168,6 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
     python_path = str(venv_python)
 
     # Execute (with retry on missing imports)
-    prompt_preview = (run.get("prompt") or "")[:80]
-    console.print(f"run {run_id} | {prompt_preview}", style="dim")
-    console.print(f"  {script}", style="dim")
     result = subprocess.run(
         [python_path, str(script), *script_args],
         capture_output=True, text=True,
