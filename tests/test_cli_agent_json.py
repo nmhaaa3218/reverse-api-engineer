@@ -17,6 +17,20 @@ from reverse_api.cli import (
 from reverse_api.session import SessionManager
 
 
+EXPECTED_PAYLOAD_KEYS = {
+    "schema_version",
+    "status",
+    "run_id",
+    "prompt",
+    "url",
+    "mode",
+    "har_path",
+    "script_path",
+    "usage",
+    "error",
+}
+
+
 class TestBuildAgentPayload:
     """Stable shape for the `agent --json` payload."""
 
@@ -68,6 +82,28 @@ class TestBuildAgentPayload:
         assert payload["status"] == "error"
         assert payload["error"] == "inner"
 
+    def test_har_path_resolves_against_provided_output_dir(self, tmp_path):
+        """har_path must use the user's --output-dir, not the default config root.
+
+        Regression for cubic-dev-ai PR #61 review (P2).
+        """
+        run_id = "deadbeef0001"
+        run_har_dir = tmp_path / "har" / run_id
+        run_har_dir.mkdir(parents=True)
+        (run_har_dir / "recording.har").write_text("{}")
+
+        with patch("reverse_api.cli.get_har_dir") as gethar:
+            gethar.side_effect = lambda rid, odir: tmp_path / "har" / rid
+            payload = _build_agent_payload(
+                {"run_id": run_id, "mode": "auto"},
+                prompt="x",
+                url=None,
+                output_dir=str(tmp_path),
+            )
+
+        gethar.assert_called_with(run_id, str(tmp_path))
+        assert payload["har_path"] == str(run_har_dir / "recording.har")
+
 
 class TestAgentCommandJson:
     """`agent` click command's --json / --no-interactive behavior."""
@@ -79,6 +115,16 @@ class TestAgentCommandJson:
         payload = json.loads(result.stdout.strip())
         assert payload["status"] == "error"
         assert "prompt" in payload["error"].lower()
+
+    def test_json_without_prompt_emits_full_schema(self):
+        """Misuse JSON must contain every documented field (nulled), not a 3-key shortcut.
+
+        Regression for cubic-dev-ai PR #61 review (P2).
+        """
+        runner = CliRunner()
+        result = runner.invoke(agent, ["--json"])
+        payload = json.loads(result.stdout.strip())
+        assert set(payload.keys()) == EXPECTED_PAYLOAD_KEYS
 
     def test_no_interactive_without_prompt_exits_2(self):
         runner = CliRunner()
@@ -279,6 +325,29 @@ class TestAgentJsonInterruption:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["status"] == "error"
         assert payload["error"] == "interrupted"
+
+    def test_inner_keyboard_interrupt_does_not_silently_succeed(self):
+        """When run_agent_capture returns a dict with `error: "interrupted"` (the
+        scenario where KeyboardInterrupt is caught inside run_auto_capture rather
+        than propagating up), the agent payload must report status=error.
+
+        Regression for cubic-dev-ai PR #61 review (P1).
+        """
+        runner = CliRunner()
+        captured = {
+            "run_id": "abc12345",
+            "mode": "auto",
+            "script_path": None,
+            "usage": {},
+            "error": "interrupted",
+        }
+        with patch("reverse_api.cli.run_agent_capture", return_value=captured):
+            result = runner.invoke(agent, ["--json", "-p", "x"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["status"] == "error"
+        assert payload["error"] == "interrupted"
+        assert payload["run_id"] == "abc12345"
 
 
 class TestAgentJsonStdoutPurity:

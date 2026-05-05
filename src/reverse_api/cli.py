@@ -97,16 +97,21 @@ def _build_agent_payload(
     *,
     prompt: str | None,
     url: str | None,
+    output_dir: str | None = None,
     error: str | None = None,
 ) -> dict:
-    """Normalize an agent capture result into a stable JSON shape."""
+    """Normalize an agent capture result into a stable JSON shape.
+
+    `output_dir` must match the value passed to the underlying capture so the
+    HAR path is resolved against the user's chosen run root, not the default.
+    """
     result = result or {}
     run_id = result.get("run_id")
     inner_error = result.get("error")
     final_error = error or inner_error or (None if run_id else "agent capture produced no run")
     har_path = None
     if run_id:
-        candidate = get_har_dir(run_id, None) / "recording.har"
+        candidate = get_har_dir(run_id, output_dir) / "recording.har"
         har_path = str(candidate) if candidate.exists() else None
     return {
         "schema_version": AGENT_JSON_SCHEMA_VERSION,
@@ -1368,11 +1373,14 @@ def agent(prompt, url, reverse_engineer, model, output_dir, no_interactive, as_j
 
     if no_interactive and not (prompt and prompt.strip()):
         if as_json:
-            click.echo(json.dumps({
-                "schema_version": AGENT_JSON_SCHEMA_VERSION,
-                "status": "error",
-                "error": "--prompt is required in non-interactive/--json mode",
-            }))
+            misuse = _build_agent_payload(
+                {},
+                prompt=prompt,
+                url=url,
+                output_dir=output_dir,
+                error="--prompt is required in non-interactive/--json mode",
+            )
+            click.echo(json.dumps(misuse))
         else:
             click.echo("error: --prompt is required when --no-interactive is set", err=True)
         sys.exit(2)
@@ -1391,11 +1399,15 @@ def agent(prompt, url, reverse_engineer, model, output_dir, no_interactive, as_j
                 model=model,
                 output_dir=output_dir,
             )
-            payload = _build_agent_payload(result, prompt=prompt, url=url)
+            payload = _build_agent_payload(result, prompt=prompt, url=url, output_dir=output_dir)
         except KeyboardInterrupt:
-            payload = _build_agent_payload({}, prompt=prompt, url=url, error="interrupted")
+            payload = _build_agent_payload(
+                {}, prompt=prompt, url=url, output_dir=output_dir, error="interrupted"
+            )
         except Exception as e:
-            payload = _build_agent_payload({}, prompt=prompt, url=url, error=str(e))
+            payload = _build_agent_payload(
+                {}, prompt=prompt, url=url, output_dir=output_dir, error=str(e)
+            )
 
     real_stdout.write(json.dumps(payload) + "\n")
     real_stdout.flush()
@@ -1757,10 +1769,12 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
         # Start sync before analysis
         engineer.start_sync()
 
+        interrupted = False
         try:
             result = asyncio.run(engineer.analyze_and_generate())
         except KeyboardInterrupt:
             result = None
+            interrupted = True
         finally:
             # Always stop sync when done
             engineer.stop_sync()
@@ -1778,6 +1792,7 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
             "mode": mode_label,
             "script_path": (result or {}).get("script_path"),
             "usage": (result or {}).get("usage", {}),
+            **({"error": "interrupted"} if interrupted else {}),
         }
 
     except Exception as e:
