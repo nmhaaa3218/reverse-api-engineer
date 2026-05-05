@@ -1,0 +1,412 @@
+"""Tests for the issue #62 follow-up items.
+
+Covers:
+1. TTY-detect at REPL entry (no subcommand + non-TTY stdin → exit 2 + help)
+2. `engineer --json` / `--no-interactive` parity with `agent --json`
+"""
+
+import json
+import subprocess
+from unittest.mock import patch
+
+from click.testing import CliRunner
+
+from reverse_api.cli import (
+    AGENT_JSON_SCHEMA_VERSION,
+    _build_engineer_payload,
+    engineer,
+    main,
+)
+
+EXPECTED_ENGINEER_KEYS = {
+    "schema_version",
+    "status",
+    "run_id",
+    "prompt",
+    "fresh",
+    "script_path",
+    "usage",
+    "error",
+}
+
+
+# ---------------------------------------------------------------------------
+# Item #1: TTY-detect at REPL entry
+# ---------------------------------------------------------------------------
+
+
+class TestTtyDetectionAtReplEntry:
+    """Without a TTY and no subcommand, the REPL must NOT block on prompt_toolkit."""
+
+    def test_no_tty_no_subcommand_exits_2(self):
+        """End-to-end: invoke the installed binary with stdin redirected from /dev/null."""
+        result = subprocess.run(
+            ["uv", "run", "reverse-api-engineer"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 2
+        assert "stdin is not a TTY" in result.stderr
+        # Help is printed too so a wrapper can self-discover the subcommands
+        assert "agent" in result.stderr
+        assert "engineer" in result.stderr
+
+    def test_no_tty_with_subcommand_does_not_trip(self):
+        """Subcommands work fine without a TTY (this is the whole point of agent --json)."""
+        result = subprocess.run(
+            ["uv", "run", "reverse-api-engineer", "list", "--json"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        # list --json on empty history should succeed with []
+        assert result.returncode == 0
+        # Nothing about TTY in the output
+        assert "TTY" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Item #2: engineer --json
+# ---------------------------------------------------------------------------
+
+
+class TestBuildEngineerPayload:
+    """Stable shape for the `engineer --json` payload."""
+
+    def test_success_shape(self):
+        payload = _build_engineer_payload(
+            {"script_path": "/abs/api_client.py", "usage": {"total_cost": 0.001}},
+            run_id="abc123",
+            prompt="add pagination",
+            fresh=False,
+        )
+        assert payload["schema_version"] == AGENT_JSON_SCHEMA_VERSION
+        assert payload["status"] == "ok"
+        assert payload["run_id"] == "abc123"
+        assert payload["prompt"] == "add pagination"
+        assert payload["fresh"] is False
+        assert payload["script_path"] == "/abs/api_client.py"
+        assert payload["usage"]["total_cost"] == 0.001
+        assert payload["error"] is None
+        assert set(payload.keys()) == EXPECTED_ENGINEER_KEYS
+
+    def test_none_result_is_error(self):
+        payload = _build_engineer_payload(None, run_id="abc", prompt=None, fresh=False)
+        assert payload["status"] == "error"
+        assert payload["error"]
+        assert set(payload.keys()) == EXPECTED_ENGINEER_KEYS
+
+    def test_explicit_error_overrides(self):
+        payload = _build_engineer_payload(
+            {"script_path": "/x.py"}, run_id="abc", prompt=None, fresh=False, error="boom"
+        )
+        assert payload["status"] == "error"
+        assert payload["error"] == "boom"
+
+    def test_inner_error_propagates(self):
+        payload = _build_engineer_payload(
+            {"error": "engine crashed"}, run_id="abc", prompt=None, fresh=False
+        )
+        assert payload["status"] == "error"
+        assert payload["error"] == "engine crashed"
+
+
+class TestEngineerCommandJson:
+    """`engineer` click command --json wiring."""
+
+    def test_json_emits_payload_on_success(self):
+        runner = CliRunner()
+        fake_result = {"script_path": "/abs/api_client.py", "usage": {"total_cost": 0.0}}
+        with patch("reverse_api.cli.run_engineer", return_value=fake_result):
+            result = runner.invoke(engineer, ["abc123", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["status"] == "ok"
+        assert payload["run_id"] == "abc123"
+        assert payload["script_path"] == "/abs/api_client.py"
+        assert set(payload.keys()) == EXPECTED_ENGINEER_KEYS
+
+    def test_json_emits_error_on_not_found(self):
+        runner = CliRunner()
+        # run_engineer returns None when the run can't be located
+        with patch("reverse_api.cli.run_engineer", return_value=None):
+            result = runner.invoke(engineer, ["doesnotexist", "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["status"] == "error"
+        assert payload["run_id"] == "doesnotexist"
+        assert payload["error"]
+        assert set(payload.keys()) == EXPECTED_ENGINEER_KEYS
+
+    def test_json_emits_error_on_keyboard_interrupt(self):
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", side_effect=KeyboardInterrupt):
+            result = runner.invoke(engineer, ["abc123", "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["status"] == "error"
+        assert payload["error"] == "interrupted"
+
+    def test_json_emits_error_on_exception(self):
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", side_effect=RuntimeError("boom")):
+            result = runner.invoke(engineer, ["abc123", "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["status"] == "error"
+        assert payload["error"] == "boom"
+
+    def test_prompt_without_fresh_threaded_as_additional(self):
+        """--prompt without --fresh must reach run_engineer as additional_instructions
+        even on the JSON path (regression for the cubic-dev-ai catch on PR #63)."""
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+            result = runner.invoke(engineer, ["abc123", "--json", "-p", "add pagination"])
+        assert result.exit_code == 0, result.output
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["prompt"] is None
+        assert kwargs["additional_instructions"] == "add pagination"
+        assert kwargs["is_fresh"] is False
+
+    def test_fresh_with_prompt_threaded_as_main(self):
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+            result = runner.invoke(
+                engineer, ["abc123", "--json", "--fresh", "-p", "extract auth"]
+            )
+        assert result.exit_code == 0, result.output
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["prompt"] == "extract auth"
+        assert kwargs["additional_instructions"] is None
+        assert kwargs["is_fresh"] is True
+
+    def test_no_interactive_flag_accepted(self):
+        """--no-interactive is reserved for symmetry; should not crash."""
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}):
+            result = runner.invoke(engineer, ["abc123", "--no-interactive"])
+        assert result.exit_code == 0, result.output
+
+
+class TestRootHelpMentionsScripted:
+    """Item #6 partial: root --help should advertise scripted features."""
+
+    def test_root_help_mentions_json_and_no_interactive(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert result.exit_code == 0
+        assert "--json" in result.output
+        assert "--no-interactive" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Follow-up suppression in non-interactive mode
+# ---------------------------------------------------------------------------
+
+
+class TestFollowUpPromptSuppressed:
+    """Regression for chatgpt-codex-connector PR #65 review (P2):
+
+    `BaseEngineer._prompt_follow_up()` blocks on `input("  > ")` after the
+    first generation. In --json / --no-interactive mode the conversation loop
+    must terminate immediately so stdin is never read; otherwise scripted
+    invocations like `engineer <run_id> --json | jq` hang before emitting the
+    payload.
+    """
+
+    def test_prompt_follow_up_returns_none_when_not_interactive(self, tmp_path):
+        """The base engineer's follow-up prompt short-circuits when
+        interactive=False, without ever touching stdin."""
+        import asyncio
+
+        from reverse_api.base_engineer import BaseEngineer
+
+        class _Eng(BaseEngineer):
+            def _build_prompts(self):
+                return ("", "")
+
+            async def analyze_and_generate(self):
+                return None
+
+        har_path = tmp_path / "test.har"
+        har_path.touch()
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path):
+            with patch("reverse_api.base_engineer.MessageStore"):
+                with patch("reverse_api.base_engineer.SessionManager") as mock_sm:
+                    mock_sm.return_value.get_run.return_value = None
+                    eng = _Eng(
+                        run_id="test123",
+                        har_path=har_path,
+                        prompt="x",
+                        interactive=False,
+                    )
+
+        # Patch input() at the builtin level — the test fails loudly if it's
+        # ever reached, proving the short-circuit happens before stdin access.
+        def _explode(*_args, **_kwargs):
+            raise AssertionError("input() must not be called when interactive=False")
+
+        with patch("builtins.input", side_effect=_explode):
+            result = asyncio.run(eng._prompt_follow_up())
+
+        assert result is None
+
+    def test_engineer_default_interactive_true(self, tmp_path):
+        """Sanity: the default value of interactive on BaseEngineer is True
+        so existing REPL UX is unchanged."""
+        from reverse_api.base_engineer import BaseEngineer
+
+        class _Eng(BaseEngineer):
+            def _build_prompts(self):
+                return ("", "")
+
+            async def analyze_and_generate(self):
+                return None
+
+        har_path = tmp_path / "test.har"
+        har_path.touch()
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path):
+            with patch("reverse_api.base_engineer.MessageStore"):
+                with patch("reverse_api.base_engineer.SessionManager") as mock_sm:
+                    mock_sm.return_value.get_run.return_value = None
+                    eng = _Eng(run_id="test123", har_path=har_path, prompt="x")
+        assert eng.interactive is True
+
+    def test_engineer_command_threads_interactive_through_run_engineer(self):
+        """`engineer --json` must pass interactive=False to run_engineer so
+        BaseEngineer drops the follow-up loop in the SDK."""
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+            result = runner.invoke(engineer, ["abc123", "--json"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["interactive"] is False
+
+    def test_engineer_command_no_interactive_threads_through(self):
+        """`engineer --no-interactive` (without --json) also disables follow-up."""
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+            result = runner.invoke(engineer, ["abc123", "--no-interactive"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["interactive"] is False
+
+    def test_engineer_default_threads_interactive_true(self):
+        """Without flags, run_engineer is called with interactive=True
+        (preserves the current REPL UX)."""
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+            result = runner.invoke(engineer, ["abc123"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["interactive"] is True
+
+    def test_agent_command_threads_interactive_through_run_agent_capture(self):
+        """`agent --json` must propagate interactive=False so
+        ClaudeAutoEngineer drops the follow-up loop too (same code path)."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch(
+            "reverse_api.cli.run_agent_capture",
+            return_value={"run_id": "abc", "mode": "auto", "script_path": None, "usage": {}},
+        ) as mock_run:
+            result = runner.invoke(agent_cmd, ["--json", "-p", "x"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["interactive"] is False
+
+
+# ---------------------------------------------------------------------------
+# --headless flag (CI / VPS / scripted)
+# ---------------------------------------------------------------------------
+
+
+class TestHeadlessFlag:
+    """`--headless` wires through to auto-engineer constructors (agent only —
+    manual mode is intentionally human-only and rejects --headless)."""
+
+    def test_manual_rejects_headless_flag(self):
+        """`manual --headless` must fail: manual mode requires a human and a
+        visible browser; agents should use `agent --headless` instead."""
+        from reverse_api.cli import manual as manual_cmd
+
+        runner = CliRunner()
+        result = runner.invoke(manual_cmd, ["-p", "x", "-u", "https://example.com", "--headless"])
+        assert result.exit_code != 0
+        assert "no such option" in result.output.lower() or "--headless" in result.output
+
+    def test_manual_help_mentions_human_only(self):
+        """`manual --help` must make it explicit that the mode requires a
+        human and is not scriptable (so agents inspecting --help self-route
+        to `agent` instead)."""
+        from reverse_api.cli import manual as manual_cmd
+
+        runner = CliRunner()
+        result = runner.invoke(manual_cmd, ["--help"])
+        assert result.exit_code == 0
+        out = result.output.lower()
+        assert "human" in out
+        assert "agent" in out  # tells the agent where to go instead
+
+    def test_agent_command_threads_headless(self):
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_agent_capture", return_value={"run_id": "x", "mode": "auto"}) as mock_run:
+            result = runner.invoke(agent_cmd, ["-p", "x", "--json", "--headless"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["headless"] is True
+
+    def test_agent_default_headless_false(self):
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_agent_capture", return_value={"run_id": "x", "mode": "auto"}) as mock_run:
+            result = runner.invoke(agent_cmd, ["-p", "x", "--json"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["headless"] is False
+
+
+class TestHeadlessMcpConfig:
+    """ClaudeAutoEngineer._get_mcp_config arg construction for headed vs headless."""
+
+    def _make(self, agent_provider: str, headless: bool, tmp_path):
+        """Build a ClaudeAutoEngineer without invoking heavy init paths."""
+        from reverse_api.auto_engineer import ClaudeAutoEngineer
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path):
+            with patch("reverse_api.base_engineer.MessageStore"):
+                with patch("reverse_api.base_engineer.SessionManager"):
+                    with patch("reverse_api.auto_engineer.get_har_dir", return_value=tmp_path):
+                        eng = ClaudeAutoEngineer(
+                            run_id="r",
+                            prompt="x",
+                            model="claude-sonnet-4-6",
+                            agent_provider=agent_provider,
+                            headless=headless,
+                        )
+        return eng
+
+    def test_chrome_mcp_headed_uses_autoconnect(self, tmp_path):
+        eng = self._make("chrome-mcp", headless=False, tmp_path=tmp_path)
+        _, cfg = eng._get_mcp_config()
+        assert "--autoConnect" in cfg["args"]
+        assert "--headless" not in cfg["args"]
+
+    def test_chrome_mcp_headless_drops_autoconnect_adds_headless(self, tmp_path):
+        eng = self._make("chrome-mcp", headless=True, tmp_path=tmp_path)
+        _, cfg = eng._get_mcp_config()
+        assert "--autoConnect" not in cfg["args"], "auto-connect cannot work without a real headed Chrome"
+        assert "--headless" in cfg["args"]
+
+    def test_playwright_headless_adds_flag(self, tmp_path):
+        eng = self._make("auto", headless=True, tmp_path=tmp_path)
+        _, cfg = eng._get_mcp_config()
+        assert "--headless" in cfg["args"]
+
+    def test_playwright_headed_no_headless_flag(self, tmp_path):
+        eng = self._make("auto", headless=False, tmp_path=tmp_path)
+        _, cfg = eng._get_mcp_config()
+        assert "--headless" not in cfg["args"]
