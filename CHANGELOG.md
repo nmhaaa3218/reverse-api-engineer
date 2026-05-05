@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- **`browser-use` and `stagehand` agent providers**: Both have been retired due to upstream churn. Agent mode now offers only `auto` (Playwright MCP) and `chrome-mcp` (Chrome DevTools MCP). Configs with `agent_provider` set to `browser-use` or `stagehand` migrate to `auto`; the `browser_use_model` and `stagehand_model` keys are dropped silently. The `[agent]` optional-dependency extra is removed.
+
 ## [0.7.1] - 2026-04-06
 
 ### Fixed

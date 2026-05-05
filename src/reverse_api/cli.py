@@ -17,7 +17,7 @@ from questionary import Choice
 from rich.console import Console
 
 from . import __version__
-from .browser import ManualBrowser, run_agent_browser
+from .browser import ManualBrowser
 from .config import ConfigManager
 from .engineer import run_reverse_engineering
 from .messages import MessageStore
@@ -598,7 +598,6 @@ def handle_settings(mode_color=THEME_PRIMARY):
     # Settings menu (sorted alphabetically)
     choices = [
         Choice(title="Agent Provider", value="agent_provider"),
-        Choice(title="Browser-Use Model", value="browser_use_model"),
         Choice(title="Claude Code Model", value="claude_code_model"),
         Choice(title="Copilot Model", value="copilot_model"),
         Choice(title="OpenCode Model", value="opencode_model"),
@@ -607,7 +606,6 @@ def handle_settings(mode_color=THEME_PRIMARY):
         Choice(title="Output Language", value="output_language"),
         Choice(title="Real-time Sync", value="real_time_sync"),
         Choice(title="SDK", value="sdk"),
-        Choice(title="Stagehand Model", value="stagehand_model"),
         Choice(title="Back", value="back"),
     ]
 
@@ -698,8 +696,6 @@ def handle_settings(mode_color=THEME_PRIMARY):
         provider_choices = [
             Choice(title="auto (Playwright MCP)", value="auto"),
             Choice(title="chrome-mcp (Chrome DevTools MCP)", value="chrome-mcp"),
-            Choice(title="browser-use", value="browser-use"),
-            Choice(title="stagehand", value="stagehand"),
             Choice(title="back", value="back"),
         ]
         provider = questionary.select(
@@ -795,83 +791,6 @@ def handle_settings(mode_color=THEME_PRIMARY):
             else:
                 config_manager.set("opencode_model", new_model)
                 console.print(f" [dim]updated[/dim] opencode model: {new_model}\n")
-
-    elif action == "browser_use_model":
-        from .browser import parse_agent_model
-
-        current = config_manager.get("browser_use_model", "bu-llm")
-        instruction = "(Format: 'bu-llm' or 'provider/model', e.g., 'openai/gpt-4')"
-
-        new_model = questionary.text(
-            " > browser-use model",
-            default=current or "bu-llm",
-            instruction=instruction,
-            qmark="",
-            style=questionary.Style(
-                [
-                    ("question", f"fg:{THEME_SECONDARY}"),
-                    ("instruction", f"fg:{THEME_DIM} italic"),
-                ]
-            ),
-        ).ask()
-        if new_model is not None:
-            new_model = new_model.strip()
-            if not new_model:
-                console.print(" [yellow]error:[/yellow] browser-use model cannot be empty\n")
-            else:
-                # Validate format for browser-use
-                try:
-                    parse_agent_model(new_model, "browser-use")
-                    config_manager.set("browser_use_model", new_model)
-                    console.print(f" [dim]updated[/dim] browser-use model: {new_model}\n")
-                except ValueError as e:
-                    console.print(f" [yellow]error:[/yellow] {e}\n")
-                    console.print(
-                        " [dim]Valid formats:[/dim]\n"
-                        " [dim]  - bu-llm[/dim]\n"
-                        " [dim]  - openai/model_name (e.g., openai/gpt-4)[/dim]\n"
-                        " [dim]  - google/model_name (e.g., google/gemini-pro)[/dim]\n"
-                    )
-
-    elif action == "stagehand_model":
-        from .browser import parse_agent_model
-
-        current = config_manager.get("stagehand_model", "openai/computer-use-preview-2025-03-11")
-        instruction = (
-            "(Format: 'openai/model' or 'anthropic/model', e.g., 'openai/computer-use-preview-2025-03-11' or 'anthropic/claude-sonnet-4-6-20260301')"
-        )
-
-        new_model = questionary.text(
-            " > stagehand model",
-            default=current or "openai/computer-use-preview-2025-03-11",
-            instruction=instruction,
-            qmark="",
-            style=questionary.Style(
-                [
-                    ("question", f"fg:{THEME_SECONDARY}"),
-                    ("instruction", f"fg:{THEME_DIM} italic"),
-                ]
-            ),
-        ).ask()
-        if new_model is not None:
-            new_model = new_model.strip()
-            if not new_model:
-                console.print(" [yellow]error:[/yellow] stagehand model cannot be empty\n")
-            else:
-                # Validate format for stagehand
-                try:
-                    parse_agent_model(new_model, "stagehand")
-                    config_manager.set("stagehand_model", new_model)
-                    console.print(f" [dim]updated[/dim] stagehand model: {new_model}\n")
-                except ValueError as e:
-                    console.print(f" [yellow]error:[/yellow] {e}\n")
-                    console.print(
-                        " [dim]Valid formats for stagehand:[/dim]\n"
-                        " [dim]  - openai/computer-use-preview-2025-03-11[/dim]\n"
-                        " [dim]  - anthropic/claude-sonnet-4-6-20260301[/dim]\n"
-                        " [dim]  - anthropic/claude-haiku-4-5-20251001[/dim]\n"
-                        " [dim]  - anthropic/claude-opus-4-6-20260301[/dim]\n"
-                    )
 
     elif action == "real_time_sync":
         current = config_manager.get("real_time_sync", True)
@@ -1366,115 +1285,14 @@ def run_agent_capture(prompt=None, url=None, reverse_engineer=False, model=None,
             console.print(" [dim]tip:[/dim] @record-only <prompt> - e.g., @record-only navigate checkout flow")
             return
 
-    run_id = generate_run_id()
-    timestamp = get_timestamp()
-    sdk = config_manager.get("sdk", "claude")
-
-    # Get agent models and provider from config
-    browser_use_model = config_manager.get("browser_use_model", "bu-llm")
-    stagehand_model = config_manager.get("stagehand_model", "openai/computer-use-preview-2025-03-11")
-    agent_provider = config_manager.get("agent_provider", "browser-use")
-
-    if agent_provider in ("auto", "chrome-mcp"):
-        return run_auto_capture(
-            prompt=prompt,
-            url=url,
-            model=model,
-            output_dir=output_dir,
-            agent_provider=agent_provider,
-        )
-
-    # Record initial session
-    session_manager.add_run(
-        run_id=run_id,
+    agent_provider = config_manager.get("agent_provider", "auto")
+    return run_auto_capture(
         prompt=prompt,
-        timestamp=timestamp,
         url=url,
         model=model,
-        mode="agent",  # Track mode in history
-        sdk=sdk,
-        paths={"har_dir": str(get_har_dir(run_id, output_dir))},
+        output_dir=output_dir,
+        agent_provider=agent_provider,
     )
-
-    # Run agent browser
-    try:
-        har_path = run_agent_browser(
-            run_id=run_id,
-            prompt=prompt,
-            output_dir=output_dir,
-            browser_use_model=browser_use_model,
-            stagehand_model=stagehand_model,
-            agent_provider=agent_provider,
-            start_url=url,
-        )
-
-        # Optionally run reverse engineering
-        if reverse_engineer:
-            engineer_prompt = prompt
-            try:
-                wants_new_prompt = questionary.confirm(
-                    " > new prompt for engineer?",
-                    default=False,
-                    qmark="",
-                    style=questionary.Style(
-                        [
-                            ("question", f"fg:{THEME_SECONDARY}"),
-                            ("instruction", f"fg:{THEME_DIM} italic"),
-                        ]
-                    ),
-                ).ask()
-
-                if wants_new_prompt is None:
-                    raise KeyboardInterrupt
-
-                if wants_new_prompt:
-                    new_prompt = questionary.text(
-                        " > engineer prompt",
-                        instruction="(Enter to use original)",
-                        default="",
-                        qmark="",
-                        style=questionary.Style(
-                            [
-                                ("question", f"fg:{THEME_SECONDARY}"),
-                                ("instruction", f"fg:{THEME_DIM} italic"),
-                            ]
-                        ),
-                    ).ask()
-
-                    if new_prompt is None:
-                        raise KeyboardInterrupt
-
-                    if new_prompt and new_prompt.strip():
-                        engineer_prompt = new_prompt.strip()
-            except KeyboardInterrupt:
-                pass
-
-            result = run_engineer(
-                run_id=run_id,
-                har_path=har_path,
-                prompt=engineer_prompt,
-                model=model,
-                output_dir=output_dir,
-            )
-            if result:
-                sdk = config_manager.get("sdk", "claude")
-                session_manager.update_run(
-                    run_id=run_id,
-                    sdk=sdk,
-                    usage=result.get("usage", {}),
-                    paths={"script_path": result.get("script_path")},
-                )
-        elif is_record_only:
-            # Show helpful message for record-only mode
-            console.print(" [dim]>[/dim] [white]recording complete[/white]")
-            console.print(f" [dim]>[/dim] [white]run_id: {run_id}[/white]")
-            console.print(f" [dim]>[/dim] [dim]use @id {run_id} <prompt> to engineer later[/dim]\n")
-    except Exception as e:
-        console.print(f" [red]agent mode error: {e}[/red]")
-        console.print(f" [dim]{ERROR_CTA}[/dim]")
-        import traceback
-
-        traceback.print_exc()
 
 
 def run_collector(prompt=None, model=None, output_dir=None):
