@@ -1207,7 +1207,15 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
 
 @main.command()
 @click.argument("run_id")
-@click.option("--prompt", "-p", default=None, help="Override the engineering prompt for this run.")
+@click.option(
+    "--prompt",
+    "-p",
+    default=None,
+    help=(
+        "With --fresh: replace the captured run's original goal. "
+        "Without --fresh: layered as additional instructions on top of the original prompt."
+    ),
+)
 @click.option(
     "--fresh",
     is_flag=True,
@@ -1222,7 +1230,18 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
 def engineer(run_id, prompt, fresh, model, output_dir):
     """Run reverse engineering on a previous run."""
-    run_engineer(run_id, prompt=prompt, model=model, output_dir=output_dir, is_fresh=fresh)
+    # --fresh treats --prompt as a full replacement of the original goal;
+    # without --fresh, --prompt is additive so the captured run's context is preserved.
+    main_prompt = prompt if fresh else None
+    additional = prompt if (prompt and not fresh) else None
+    run_engineer(
+        run_id,
+        prompt=main_prompt,
+        additional_instructions=additional,
+        model=model,
+        output_dir=output_dir,
+        is_fresh=fresh,
+    )
 
 
 def run_engineer(
