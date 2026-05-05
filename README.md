@@ -356,6 +356,42 @@ Use these slash commands while in the CLI:
 - `/help` - Show all commands
 - `/exit` - Quit
 
+### Scripted / Agent Usage
+
+The CLI subcommands are scriptable. Pass `--no-interactive` (and/or `--json`) so they fail fast instead of opening prompts, and pipe the structured output into `jq` or another agent.
+
+```bash
+# Run an autonomous agent capture and get a single JSON result on stdout
+reverse-api-engineer agent \
+  --prompt "capture the public jobs api" \
+  --url https://example.com/jobs \
+  --json | jq
+
+# Output (logs go to stderr; one JSON object on stdout):
+# {
+#   "schema_version": 1,
+#   "status": "ok",
+#   "run_id": "deadbeef0001",
+#   "prompt": "capture the public jobs api",
+#   "url": "https://example.com/jobs",
+#   "mode": "auto",
+#   "har_path": "/.../recording.har",
+#   "script_path": "/.../api_client.py",
+#   "usage": { ... },
+#   "error": null
+# }
+
+# List runs / inspect a run as JSON (empty history -> [])
+reverse-api-engineer list --json
+reverse-api-engineer show <run_id> --json
+
+# Run a generated script non-interactively (errors on multiple-script picker
+# or missing-dep prompt instead of blocking)
+reverse-api-engineer run <run_id> --no-interactive --auto-install -- --org acme
+```
+
+Exit codes: `0` success, `1` runtime error, `2` misuse (missing required args).
+
 ## 🔌 Claude Code Plugin
 
 Install the plugin in [Claude Code](https://claude.com/claude-code):

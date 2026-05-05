@@ -2,6 +2,8 @@ import asyncio
 import json
 import random
 import re
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
@@ -58,6 +60,66 @@ setproctitle.setthreadtitle("reverse-api-engineer")
 console = Console()
 config_manager = ConfigManager(get_config_path())
 session_manager = SessionManager(get_history_path())
+
+# Stable schema version for --json outputs consumed by other agents/scripts.
+AGENT_JSON_SCHEMA_VERSION = 1
+
+
+@contextmanager
+def _quiet_consoles_for_json():
+    """Reserve stdout for the final JSON payload; route Rich output to stderr.
+
+    Yields the original stdout file object so the caller can write JSON to it
+    after the wrapped block exits cleanly. Rich Console.file is a property that
+    lazily resolves to sys.stdout, so we save/restore the underlying _file slot
+    rather than the resolved file object.
+    """
+    real_stdout = sys.stdout
+    redirected_consoles: list[tuple[Console, object]] = []
+    sys.stdout = sys.stderr
+    for mod_name, mod in list(sys.modules.items()):
+        if not mod_name.startswith("reverse_api") or mod is None:
+            continue
+        candidate = getattr(mod, "console", None)
+        if isinstance(candidate, Console):
+            redirected_consoles.append((candidate, candidate._file))
+            candidate.file = sys.stderr
+    try:
+        yield real_stdout
+    finally:
+        sys.stdout = real_stdout
+        for c, original_inner in redirected_consoles:
+            c._file = original_inner
+
+
+def _build_agent_payload(
+    result: dict | None,
+    *,
+    prompt: str | None,
+    url: str | None,
+    error: str | None = None,
+) -> dict:
+    """Normalize an agent capture result into a stable JSON shape."""
+    result = result or {}
+    run_id = result.get("run_id")
+    inner_error = result.get("error")
+    final_error = error or inner_error or (None if run_id else "agent capture produced no run")
+    har_path = None
+    if run_id:
+        candidate = get_har_dir(run_id, None) / "recording.har"
+        har_path = str(candidate) if candidate.exists() else None
+    return {
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "error" if final_error else "ok",
+        "run_id": run_id,
+        "prompt": prompt,
+        "url": url,
+        "mode": result.get("mode"),
+        "har_path": har_path,
+        "script_path": result.get("script_path"),
+        "usage": result.get("usage") or {},
+        "error": final_error,
+    }
 
 # Mode definitions
 MODES = ["agent", "manual", "engineer", "collector"]
@@ -1261,9 +1323,55 @@ def manual(prompt, url, reverse_engineer, model, output_dir):
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
-def agent(prompt, url, reverse_engineer, model, output_dir):
+@click.option(
+    "--no-interactive",
+    is_flag=True,
+    help="Fail fast instead of prompting for missing inputs (intended for scripted/agent usage).",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit a single JSON result on stdout (logs go to stderr). Implies --no-interactive.",
+)
+def agent(prompt, url, reverse_engineer, model, output_dir, no_interactive, as_json):
     """Run autonomous agent browser session."""
-    run_agent_capture(prompt=prompt, url=url, reverse_engineer=reverse_engineer, model=model, output_dir=output_dir)
+    no_interactive = no_interactive or as_json
+
+    if no_interactive and not (prompt and prompt.strip()):
+        if as_json:
+            click.echo(json.dumps({
+                "schema_version": AGENT_JSON_SCHEMA_VERSION,
+                "status": "error",
+                "error": "--prompt is required in non-interactive/--json mode",
+            }))
+        else:
+            click.echo("error: --prompt is required when --no-interactive is set", err=True)
+        sys.exit(2)
+
+    if not as_json:
+        run_agent_capture(prompt=prompt, url=url, reverse_engineer=reverse_engineer, model=model, output_dir=output_dir)
+        return
+
+    payload: dict
+    with _quiet_consoles_for_json() as real_stdout:
+        try:
+            result = run_agent_capture(
+                prompt=prompt,
+                url=url,
+                reverse_engineer=reverse_engineer,
+                model=model,
+                output_dir=output_dir,
+            )
+            payload = _build_agent_payload(result, prompt=prompt, url=url)
+        except KeyboardInterrupt:
+            payload = _build_agent_payload({}, prompt=prompt, url=url, error="interrupted")
+        except Exception as e:
+            payload = _build_agent_payload({}, prompt=prompt, url=url, error=str(e))
+
+    real_stdout.write(json.dumps(payload) + "\n")
+    real_stdout.flush()
+    sys.exit(0 if payload["status"] == "ok" else 1)
 
 
 def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None, output_dir=None):
@@ -1637,7 +1745,12 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
                 paths={"script_path": result.get("script_path")},
             )
 
-        return result
+        return {
+            "run_id": run_id,
+            "mode": mode_label,
+            "script_path": (result or {}).get("script_path"),
+            "usage": (result or {}).get("usage", {}),
+        }
 
     except Exception as e:
         console.print(f" [red]auto mode error: {e}[/red]")
@@ -1645,7 +1758,13 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
         import traceback
 
         traceback.print_exc()
-        return None
+        return {
+            "run_id": run_id,
+            "mode": mode_label,
+            "script_path": None,
+            "usage": {},
+            "error": str(e),
+        }
 
 
 def run_playwright_codegen(run_id: str, prompt: str, output_dir: str | None = None, start_url: str | None = None):
@@ -1897,7 +2016,9 @@ def list_runs(as_json, full, limit, mode, model, search):
         runs = [r for r in runs if search.lower() in (r.get("prompt") or "").lower()]
 
     if not runs:
-        if not session_manager.history:
+        if as_json:
+            click.echo(json.dumps([]))
+        elif not session_manager.history:
             console.print("No runs found.", style="dim")
         else:
             console.print("No matching runs found.")
@@ -1968,10 +2089,16 @@ def show_run(run_id, as_json):
     elif session_manager.history:
         run = session_manager.history[0]
     else:
+        if as_json:
+            click.echo(json.dumps({"error": "no runs found"}))
+            sys.exit(1)
         console.print("No runs found.", style="dim")
         return
 
     if run is None:
+        if as_json:
+            click.echo(json.dumps({"error": "run not found", "run_id": run_id}))
+            sys.exit(1)
         console.print(f"Run not found: {run_id}")
         return
 
@@ -2066,8 +2193,18 @@ def show_run(run_id, as_json):
 @click.argument("script_args", nargs=-1, type=click.UNPROCESSED)
 @click.option("--file", "-f", "file_name", default=None, help="Script filename to run (e.g. api_client.py).")
 @click.option("--ls", "list_scripts", is_flag=True, help="List available scripts without executing.")
+@click.option(
+    "--no-interactive",
+    is_flag=True,
+    help="Fail fast on script-picker / missing-dependency prompts (intended for scripted/agent usage).",
+)
+@click.option(
+    "--auto-install",
+    is_flag=True,
+    help="Auto-install missing dependencies on retry without prompting (implies --no-interactive for the picker).",
+)
 @click.pass_context
-def run_script(ctx, identifier, script_args, file_name, list_scripts):
+def run_script(ctx, identifier, script_args, file_name, list_scripts, no_interactive, auto_install):
     """Run a generated script from a previous run.
 
     IDENTIFIER is a run ID or search term to match against prompts.
@@ -2132,6 +2269,11 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
         script = matching[0]
     elif len(scripts) == 1:
         script = scripts[0]
+    elif no_interactive or auto_install:
+        available = ", ".join(s.name for s in scripts)
+        raise click.ClickException(
+            f"multiple scripts found for run {run_id}; pass --file <name> to choose. Available: {available}"
+        )
     else:
         # Interactive picker
         choices = [questionary.Choice(title=s.name, value=s) for s in scripts]
@@ -2181,9 +2323,14 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
                 missing = match.group(1).split(".")[0]
                 console.print(f"[yellow]Missing dependency: {missing}[/yellow]")
 
-                install = questionary.confirm(
-                    f"Install '{missing}' and retry?", default=True
-                ).ask()
+                if auto_install:
+                    install = True
+                elif no_interactive:
+                    install = False
+                else:
+                    install = questionary.confirm(
+                        f"Install '{missing}' and retry?", default=True
+                    ).ask()
                 if install:
                     subprocess.run([str(venv_pip), "install", "-q", missing], check=True)
                     console.print(f"Installed [green]{missing}[/green]. Retrying...")
