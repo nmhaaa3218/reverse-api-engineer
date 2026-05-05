@@ -214,6 +214,7 @@ def run_reverse_engineering(
     is_fresh: bool = False,
     output_language: str = "python",
     output_mode: str = "client",
+    interactive: bool = True,
 ) -> dict[str, Any] | None:
     """Run reverse engineering with the specified SDK.
 
@@ -245,6 +246,7 @@ def run_reverse_engineering(
             is_fresh=is_fresh,
             output_language=output_language,
             output_mode=output_mode,
+            interactive=interactive,
         )
     elif sdk == "copilot":
         from .copilot_engineer import CopilotEngineer
@@ -263,6 +265,7 @@ def run_reverse_engineering(
             output_language=output_language,
             output_mode=output_mode,
             copilot_model=copilot_model,
+            interactive=interactive,
         )
     else:
         engineer = ClaudeEngineer(
@@ -278,6 +281,7 @@ def run_reverse_engineering(
             is_fresh=is_fresh,
             output_language=output_language,
             output_mode=output_mode,
+            interactive=interactive,
         )
 
     # Start sync before analysis

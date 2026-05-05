@@ -1,6 +1,8 @@
 import asyncio
 import json
 import random
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
@@ -51,6 +53,101 @@ setproctitle.setthreadtitle("reverse-api-engineer")
 console = Console()
 config_manager = ConfigManager(get_config_path())
 session_manager = SessionManager(get_history_path())
+
+# Stable schema version for --json outputs consumed by other agents/scripts.
+AGENT_JSON_SCHEMA_VERSION = 1
+
+
+@contextmanager
+def _quiet_consoles_for_json():
+    """Reserve stdout for the final JSON payload; route Rich output to stderr.
+
+    Yields the original stdout file object so the caller can write JSON to it
+    after the wrapped block exits cleanly. Rich Console.file is a property that
+    lazily resolves to sys.stdout, so we save/restore the underlying _file slot
+    rather than the resolved file object.
+    """
+    real_stdout = sys.stdout
+    redirected_consoles: list[tuple[Console, object]] = []
+    sys.stdout = sys.stderr
+    for mod_name, mod in list(sys.modules.items()):
+        if not mod_name.startswith("reverse_api") or mod is None:
+            continue
+        candidate = getattr(mod, "console", None)
+        if isinstance(candidate, Console):
+            redirected_consoles.append((candidate, candidate._file))
+            candidate.file = sys.stderr
+    try:
+        yield real_stdout
+    finally:
+        sys.stdout = real_stdout
+        for c, original_inner in redirected_consoles:
+            c._file = original_inner
+
+
+def _build_agent_payload(
+    result: dict | None,
+    *,
+    prompt: str | None,
+    url: str | None,
+    output_dir: str | None = None,
+    error: str | None = None,
+) -> dict:
+    """Normalize an agent capture result into a stable JSON shape.
+
+    `output_dir` must match the value passed to the underlying capture so the
+    HAR path is resolved against the user's chosen run root, not the default.
+    """
+    result = result or {}
+    run_id = result.get("run_id")
+    inner_error = result.get("error")
+    final_error = error or inner_error or (None if run_id else "agent capture produced no run")
+    har_path = None
+    if run_id:
+        candidate = get_har_dir(run_id, output_dir) / "recording.har"
+        har_path = str(candidate) if candidate.exists() else None
+    return {
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "error" if final_error else "ok",
+        "run_id": run_id,
+        "prompt": prompt,
+        "url": url,
+        "mode": result.get("mode"),
+        "har_path": har_path,
+        "script_path": result.get("script_path"),
+        "usage": result.get("usage") or {},
+        "error": final_error,
+    }
+
+
+def _build_engineer_payload(
+    result: dict | None,
+    *,
+    run_id: str,
+    prompt: str | None,
+    fresh: bool,
+    error: str | None = None,
+) -> dict:
+    """Normalize an engineer-mode result into a stable JSON shape.
+
+    Mirrors `_build_agent_payload`'s contract minus the agent-specific fields
+    (no `url`, no `mode`, no `har_path`). `prompt` is the value the user passed
+    to --prompt (which may have been used as either a full replacement or as
+    additional instructions depending on --fresh).
+    """
+    result = result if result is not None else {}
+    inner_error = result.get("error") if isinstance(result, dict) else None
+    final_error = error or inner_error or (None if result else "engineering produced no result")
+    return {
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "error" if final_error else "ok",
+        "run_id": run_id,
+        "prompt": prompt,
+        "fresh": fresh,
+        "script_path": result.get("script_path") if isinstance(result, dict) else None,
+        "usage": (result.get("usage") if isinstance(result, dict) else None) or {},
+        "error": final_error,
+    }
 
 # Mode definitions
 MODES = ["agent", "manual", "engineer", "collector"]
@@ -324,8 +421,23 @@ def main(ctx: click.Context):
 
     Run without a subcommand to start the interactive REPL; use agent, manual,
     or engineer for CLI mode.
+
+    Most subcommands accept --json and --no-interactive for scripted use; see
+    `<cmd> --help` for per-command details.
     """
     if ctx.invoked_subcommand is None:
+        # Refuse to drop into the prompt_toolkit REPL when stdin is not a TTY:
+        # without an interactive terminal the REPL would block on stdin
+        # forever (e.g. CI invocations, agent wrappers that forgot the
+        # subcommand). Print --help to stderr and exit 2 (misuse).
+        if not sys.stdin.isatty():
+            click.echo(ctx.get_help(), err=True)
+            click.echo(
+                "\nerror: no subcommand given and stdin is not a TTY; "
+                "the interactive REPL requires a terminal.",
+                err=True,
+            )
+            sys.exit(2)
         repl_loop()
 
 
@@ -924,11 +1036,50 @@ def handle_messages(run_id: str, mode_color=THEME_PRIMARY):
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
 def manual(prompt, url, reverse_engineer, model, output_dir):
-    """Start a manual browser session."""
+    """Start a manual browser session.
+
+    \b
+    Interactive only — this mode requires a human in front of a real,
+    visible browser to navigate, click, and submit forms. It cannot be
+    driven by an agent or run on a headless machine. There is no
+    --headless / --json / --no-interactive flag here on purpose.
+
+    For scripted / agent / CI use cases, use `agent --json --headless`
+    instead, which runs an autonomous AI-driven capture without needing
+    a human or an X server.
+    """
     run_manual_capture(prompt, url, reverse_engineer, model, output_dir)
 
 
-@main.command()
+@main.command(
+    epilog="""\b
+Examples:
+  reverse-api-engineer agent
+  reverse-api-engineer agent -p "capture the jobs api" -u https://example.com --no-interactive
+  reverse-api-engineer agent -p "capture the jobs api" --json | jq
+
+\b
+JSON output schema (--json):
+  {
+    "schema_version": 1,
+    "status": "ok" | "error",
+    "run_id": "<id>" | null,
+    "prompt": "...",
+    "url": "..." | null,
+    "mode": "auto" | "chrome-mcp" | null,
+    "har_path": "/abs/path/recording.har" | null,
+    "script_path": "/abs/path/api_client.py" | null,
+    "usage": { "input_tokens": ..., "output_tokens": ..., "total_cost": ... },
+    "error": "<message>" | null
+  }
+
+\b
+Exit codes:
+  0  success
+  1  runtime error (capture or engineering failed)
+  2  misuse (e.g. --prompt missing under --no-interactive / --json)
+"""
+)
 @click.option("--prompt", "-p", default=None, help="Instruction for the autonomous agent.")
 @click.option("--url", "-u", default=None, help="Optional starting URL.")
 @click.option(
@@ -938,13 +1089,83 @@ def manual(prompt, url, reverse_engineer, model, output_dir):
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
-def agent(prompt, url, model, output_dir):
+@click.option(
+    "--no-interactive",
+    is_flag=True,
+    help="Fail fast instead of prompting for missing inputs (intended for scripted/agent usage).",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit a single JSON result on stdout (logs go to stderr). Implies --no-interactive.",
+)
+@click.option(
+    "--headless",
+    is_flag=True,
+    help="Launch the MCP-controlled browser in headless mode (required on machines without an X server). For chrome-mcp this drops --autoConnect since auto-connect requires a headed Chrome instance.",
+)
+def agent(prompt, url, model, output_dir, no_interactive, as_json, headless):
     """Run autonomous agent browser session.
 
     Agent mode runs an integrated capture + reverse-engineering pipeline; if you
     only want a HAR recording, use `manual --no-engineer` instead.
     """
-    run_agent_capture(prompt=prompt, url=url, model=model, output_dir=output_dir)
+    no_interactive = no_interactive or as_json
+
+    if no_interactive and not (prompt and prompt.strip()):
+        if as_json:
+            misuse = _build_agent_payload(
+                {},
+                prompt=prompt,
+                url=url,
+                output_dir=output_dir,
+                error="--prompt is required in non-interactive/--json mode",
+            )
+            click.echo(json.dumps(misuse))
+        else:
+            click.echo("error: --prompt is required when --no-interactive is set", err=True)
+        sys.exit(2)
+
+    # Either flag must suppress the post-generation follow-up prompt that would
+    # otherwise block on stdin (`input("  > ")`) inside ClaudeAutoEngineer.
+    interactive = not (as_json or no_interactive)
+
+    if not as_json:
+        run_agent_capture(
+            prompt=prompt,
+            url=url,
+            model=model,
+            output_dir=output_dir,
+            interactive=interactive,
+            headless=headless,
+        )
+        return
+
+    payload: dict
+    with _quiet_consoles_for_json() as real_stdout:
+        try:
+            result = run_agent_capture(
+                prompt=prompt,
+                url=url,
+                model=model,
+                output_dir=output_dir,
+                interactive=interactive,
+                headless=headless,
+            )
+            payload = _build_agent_payload(result, prompt=prompt, url=url, output_dir=output_dir)
+        except KeyboardInterrupt:
+            payload = _build_agent_payload(
+                {}, prompt=prompt, url=url, output_dir=output_dir, error="interrupted"
+            )
+        except Exception as e:
+            payload = _build_agent_payload(
+                {}, prompt=prompt, url=url, output_dir=output_dir, error=str(e)
+            )
+
+    real_stdout.write(json.dumps(payload) + "\n")
+    real_stdout.flush()
+    sys.exit(0 if payload["status"] == "ok" else 1)
 
 
 def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None, output_dir=None):
@@ -1006,7 +1227,7 @@ def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None,
         console.print(f" [dim]>[/dim] [dim]use 'reverse-api-engineer engineer {run_id}' to engineer later[/dim]\n")
 
 
-def run_agent_capture(prompt=None, url=None, model=None, output_dir=None):
+def run_agent_capture(prompt=None, url=None, model=None, output_dir=None, interactive=True, headless=False):
     """Shared logic for agent capture mode."""
     output_dir = output_dir or config_manager.get("output_dir")
 
@@ -1030,6 +1251,8 @@ def run_agent_capture(prompt=None, url=None, model=None, output_dir=None):
         model=model,
         output_dir=output_dir,
         agent_provider=agent_provider,
+        interactive=interactive,
+        headless=headless,
     )
 
 
@@ -1082,7 +1305,15 @@ def run_collector(prompt=None, model=None, output_dir=None):
         traceback.print_exc()
 
 
-def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_provider="auto"):
+def run_auto_capture(
+    prompt=None,
+    url=None,
+    model=None,
+    output_dir=None,
+    agent_provider="auto",
+    interactive=True,
+    headless=False,
+):
     """Auto mode: LLM-driven browser automation + real-time reverse engineering."""
     output_dir = output_dir or config_manager.get("output_dir")
 
@@ -1099,7 +1330,7 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
         url = options.get("url")
         model = options["model"]
 
-    if agent_provider == "chrome-mcp":
+    if agent_provider == "chrome-mcp" and not headless:
         console.print()
         console.print(" [dim]chrome devtools mcp (auto-connect)[/dim]")
         console.print(" [dim]controlling your real chrome browser[/dim]")
@@ -1113,6 +1344,11 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
         console.print()
         console.print(" [dim]warning: the agent will execute actions on your browser[/dim]")
         console.print(" [dim]avoid browsing sensitive sites during the session[/dim]")
+        console.print()
+    elif agent_provider == "chrome-mcp" and headless:
+        console.print()
+        console.print(" [dim]chrome devtools mcp (headless)[/dim]")
+        console.print(" [dim]auto-connect disabled — mcp will spawn its own headless chrome[/dim]")
         console.print()
 
     run_id = generate_run_id()
@@ -1146,6 +1382,8 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
                 output_language=output_language,
+                interactive=interactive,
+                headless=headless,
             )
         elif sdk == "copilot":
             from .auto_engineer import CopilotAutoEngineer
@@ -1159,6 +1397,8 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
                 output_language=output_language,
+                interactive=interactive,
+                headless=headless,
             )
         else:
             from .auto_engineer import ClaudeAutoEngineer
@@ -1172,15 +1412,19 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
                 output_language=output_language,
+                interactive=interactive,
+                headless=headless,
             )
 
         # Start sync before analysis
         engineer.start_sync()
 
+        interrupted = False
         try:
             result = asyncio.run(engineer.analyze_and_generate())
         except KeyboardInterrupt:
             result = None
+            interrupted = True
         finally:
             # Always stop sync when done
             engineer.stop_sync()
@@ -1193,7 +1437,13 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
                 paths={"script_path": result.get("script_path")},
             )
 
-        return result
+        return {
+            "run_id": run_id,
+            "mode": mode_label,
+            "script_path": (result or {}).get("script_path"),
+            "usage": (result or {}).get("usage", {}),
+            **({"error": "interrupted"} if interrupted else {}),
+        }
 
     except Exception as e:
         console.print(f" [red]auto mode error: {e}[/red]")
@@ -1201,11 +1451,44 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
         import traceback
 
         traceback.print_exc()
-        return None
+        return {
+            "run_id": run_id,
+            "mode": mode_label,
+            "script_path": None,
+            "usage": {},
+            "error": str(e),
+        }
 
 
 
-@main.command()
+@main.command(
+    epilog="""\b
+Examples:
+  reverse-api-engineer engineer abc123def456
+  reverse-api-engineer engineer abc123def456 -p "add pagination support"
+  reverse-api-engineer engineer abc123def456 --fresh -p "extract auth flow only"
+  reverse-api-engineer engineer abc123def456 --json | jq
+
+\b
+JSON output schema (--json):
+  {
+    "schema_version": 1,
+    "status": "ok" | "error",
+    "run_id": "<id>",
+    "prompt": "..." | null,
+    "fresh": false,
+    "script_path": "/abs/path/api_client.py" | null,
+    "usage": { "input_tokens": ..., "output_tokens": ..., "total_cost": ... },
+    "error": "<message>" | null
+  }
+
+\b
+Exit codes:
+  0  success
+  1  runtime error (engineering failed, run not found)
+  2  misuse
+"""
+)
 @click.argument("run_id")
 @click.option(
     "--prompt",
@@ -1228,20 +1511,64 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
-def engineer(run_id, prompt, fresh, model, output_dir):
+@click.option(
+    "--no-interactive",
+    is_flag=True,
+    help="Reserved for symmetry with `agent`/`run`; engineer mode is non-interactive by design.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit a single JSON result on stdout (logs go to stderr). Implies --no-interactive.",
+)
+def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json):
     """Run reverse engineering on a previous run."""
     # --fresh treats --prompt as a full replacement of the original goal;
     # without --fresh, --prompt is additive so the captured run's context is preserved.
     main_prompt = prompt if fresh else None
     additional = prompt if (prompt and not fresh) else None
-    run_engineer(
-        run_id,
-        prompt=main_prompt,
-        additional_instructions=additional,
-        model=model,
-        output_dir=output_dir,
-        is_fresh=fresh,
-    )
+    # Either flag must suppress the post-generation follow-up prompt that
+    # would otherwise block on stdin (`input("  > ")`) inside ClaudeEngineer.
+    interactive = not (as_json or no_interactive)
+
+    if not as_json:
+        run_engineer(
+            run_id,
+            prompt=main_prompt,
+            additional_instructions=additional,
+            model=model,
+            output_dir=output_dir,
+            is_fresh=fresh,
+            interactive=interactive,
+        )
+        return
+
+    payload: dict
+    with _quiet_consoles_for_json() as real_stdout:
+        try:
+            result = run_engineer(
+                run_id,
+                prompt=main_prompt,
+                additional_instructions=additional,
+                model=model,
+                output_dir=output_dir,
+                is_fresh=fresh,
+                interactive=interactive,
+            )
+            payload = _build_engineer_payload(result, run_id=run_id, prompt=prompt, fresh=fresh)
+        except KeyboardInterrupt:
+            payload = _build_engineer_payload(
+                None, run_id=run_id, prompt=prompt, fresh=fresh, error="interrupted"
+            )
+        except Exception as e:
+            payload = _build_engineer_payload(
+                None, run_id=run_id, prompt=prompt, fresh=fresh, error=str(e)
+            )
+
+    real_stdout.write(json.dumps(payload) + "\n")
+    real_stdout.flush()
+    sys.exit(0 if payload["status"] == "ok" else 1)
 
 
 def run_engineer(
@@ -1253,6 +1580,7 @@ def run_engineer(
     additional_instructions=None,
     is_fresh=False,
     output_mode="client",
+    interactive=True,
 ):
     """Shared logic for reverse engineering."""
     if not har_path or not prompt:
@@ -1294,6 +1622,7 @@ def run_engineer(
             is_fresh=is_fresh,
             output_language=output_language,
             output_mode=output_mode,
+            interactive=interactive,
         )
     elif sdk == "copilot":
         result = run_reverse_engineering(
@@ -1309,6 +1638,7 @@ def run_engineer(
             is_fresh=is_fresh,
             output_language=output_language,
             output_mode=output_mode,
+            interactive=interactive,
         )
     else:
         result = run_reverse_engineering(
@@ -1323,6 +1653,7 @@ def run_engineer(
             is_fresh=is_fresh,
             output_language=output_language,
             output_mode=output_mode,
+            interactive=interactive,
         )
 
     if result:
@@ -1418,7 +1749,16 @@ def _get_run_details(run: dict) -> dict:
     }
 
 
-@main.command("list")
+@main.command(
+    "list",
+    epilog="""\b
+Examples:
+  reverse-api-engineer list
+  reverse-api-engineer list --mode auto --search jobs --json | jq
+
+JSON output (--json) is always a flat array (possibly empty []).
+""",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as flat JSON array.")
 @click.option("--full", is_flag=True, help="Show all columns (default: compact view).")
 @click.option("--limit", "-n", type=int, default=None, help="Limit number of results.")
@@ -1439,7 +1779,9 @@ def list_runs(as_json, full, limit, mode, model, search):
         runs = [r for r in runs if search.lower() in (r.get("prompt") or "").lower()]
 
     if not runs:
-        if not session_manager.history:
+        if as_json:
+            click.echo(json.dumps([]))
+        elif not session_manager.history:
             console.print("No runs found.", style="dim")
         else:
             console.print("No matching runs found.")
@@ -1497,7 +1839,19 @@ def list_runs(as_json, full, limit, mode, model, search):
     console.print(table)
 
 
-@main.command("show")
+@main.command(
+    "show",
+    epilog="""\b
+Examples:
+  reverse-api-engineer show
+  reverse-api-engineer show <run_id> --json | jq
+
+\b
+Exit codes (--json):
+  0  run found
+  1  run not found / no history
+""",
+)
 @click.argument("run_id", required=False)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON object.")
 def show_run(run_id, as_json):
@@ -1510,10 +1864,16 @@ def show_run(run_id, as_json):
     elif session_manager.history:
         run = session_manager.history[0]
     else:
+        if as_json:
+            click.echo(json.dumps({"error": "no runs found"}))
+            sys.exit(1)
         console.print("No runs found.", style="dim")
         return
 
     if run is None:
+        if as_json:
+            click.echo(json.dumps({"error": "run not found", "run_id": run_id}))
+            sys.exit(1)
         console.print(f"Run not found: {run_id}")
         return
 
@@ -1603,13 +1963,38 @@ def show_run(run_id, as_json):
     console.print(table)
 
 
-@main.command("run")
+@main.command(
+    "run",
+    epilog="""\b
+Examples:
+  reverse-api-engineer run a450e520ca30
+  reverse-api-engineer run ashby --ls
+  reverse-api-engineer run ashby --file api_client.py -- --org acme --limit 10
+  reverse-api-engineer run a450e520ca30 --file api_client.py --no-interactive --auto-install
+
+\b
+Exit codes:
+  <script's exit code>  the underlying script's return code (0 on success)
+  1                     no script found for the run
+  non-zero              missing --file when multiple scripts exist under --no-interactive
+""",
+)
 @click.argument("identifier")
 @click.argument("script_args", nargs=-1, type=click.UNPROCESSED)
 @click.option("--file", "-f", "file_name", default=None, help="Script filename to run (e.g. api_client.py).")
 @click.option("--ls", "list_scripts", is_flag=True, help="List available scripts without executing.")
+@click.option(
+    "--no-interactive",
+    is_flag=True,
+    help="Fail fast on script-picker / missing-dependency prompts (intended for scripted/agent usage).",
+)
+@click.option(
+    "--auto-install",
+    is_flag=True,
+    help="Auto-install missing dependencies on retry without prompting (implies --no-interactive for the picker).",
+)
 @click.pass_context
-def run_script(ctx, identifier, script_args, file_name, list_scripts):
+def run_script(ctx, identifier, script_args, file_name, list_scripts, no_interactive, auto_install):
     """Run a generated script from a previous run.
 
     IDENTIFIER is a run ID or search term to match against prompts.
@@ -1674,6 +2059,11 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
         script = matching[0]
     elif len(scripts) == 1:
         script = scripts[0]
+    elif no_interactive or auto_install:
+        available = ", ".join(s.name for s in scripts)
+        raise click.ClickException(
+            f"multiple scripts found for run {run_id}; pass --file <name> to choose. Available: {available}"
+        )
     else:
         # Interactive picker
         choices = [questionary.Choice(title=s.name, value=s) for s in scripts]
@@ -1723,9 +2113,14 @@ def run_script(ctx, identifier, script_args, file_name, list_scripts):
                 missing = match.group(1).split(".")[0]
                 console.print(f"[yellow]Missing dependency: {missing}[/yellow]")
 
-                install = questionary.confirm(
-                    f"Install '{missing}' and retry?", default=True
-                ).ask()
+                if auto_install:
+                    install = True
+                elif no_interactive:
+                    install = False
+                else:
+                    install = questionary.confirm(
+                        f"Install '{missing}' and retry?", default=True
+                    ).ask()
                 if install:
                     subprocess.run([str(venv_pip), "install", "-q", missing], check=True)
                     console.print(f"Installed [green]{missing}[/green]. Retrying...")

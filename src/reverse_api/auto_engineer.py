@@ -37,6 +37,9 @@ class ClaudeAutoEngineer(ClaudeEngineer):
         **kwargs,
     ):
         """Initialize auto engineer with expected HAR path (created by MCP)."""
+        # `headless` is auto-engineer specific (controls the MCP-spawned browser),
+        # not BaseEngineer concept; pop before super() to avoid an unknown kwarg.
+        headless = kwargs.pop("headless", False)
         har_dir = get_har_dir(run_id, output_dir)
         har_path = har_dir / "recording.har"
 
@@ -50,6 +53,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
         )
         self.mcp_run_id = run_id
         self.agent_provider = agent_provider
+        self.headless = headless
 
     def _build_auto_prompts(self) -> tuple[str, str]:
         """Build (system_prompt, user_message) for auto mode.
@@ -112,22 +116,35 @@ class ClaudeAutoEngineer(ClaudeEngineer):
         return PermissionResultAllow(updated_input=input_data)
 
     def _get_mcp_config(self) -> tuple[str, dict]:
-        """Return (server_name, mcp_config) based on agent_provider."""
+        """Return (server_name, mcp_config) based on agent_provider.
+
+        Auto-connect requires a real headed Chrome instance with a remote
+        debugging server, so it is dropped in headless mode and the MCP
+        spawns its own headless Chromium instead.
+        """
         if self.agent_provider == "chrome-mcp":
+            args = ["chrome-devtools-mcp@latest", "--no-usage-statistics"]
+            if self.headless:
+                args.append("--headless")
+            else:
+                args.append("--autoConnect")
             return "chrome-devtools", {
                 "type": "stdio",
                 "command": "npx",
-                "args": ["chrome-devtools-mcp@latest", "--autoConnect", "--no-usage-statistics"],
+                "args": args,
             }
+        playwright_args = [
+            "rae-playwright-mcp@latest",
+            "run-mcp-server",
+            "--run-id",
+            self.mcp_run_id,
+        ]
+        if self.headless:
+            playwright_args.append("--headless")
         return "playwright", {
             "type": "stdio",
             "command": "npx",
-            "args": [
-                "rae-playwright-mcp@latest",
-                "run-mcp-server",
-                "--run-id",
-                self.mcp_run_id,
-            ],
+            "args": playwright_args,
         }
 
     async def analyze_and_generate(self) -> dict[str, Any] | None:
@@ -210,6 +227,7 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
 
     def __init__(self, run_id: str, prompt: str, output_dir: str | None = None, agent_provider: str = "auto", **kwargs):
         """Initialize auto engineer with expected HAR path (created by MCP)."""
+        headless = kwargs.pop("headless", False)
         har_dir = get_har_dir(run_id, output_dir)
         har_path = har_dir / "recording.har"
 
@@ -223,36 +241,50 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
         self.mcp_run_id = run_id
         self.agent_provider = agent_provider
         self.mcp_name = None
+        self.headless = headless
 
     def _get_active_prompts(self) -> tuple[str, str]:
         return ClaudeAutoEngineer._build_auto_prompts(self)
 
     def _get_opencode_mcp_config(self) -> dict:
-        """Return OpenCode MCP registration payload based on agent_provider."""
+        """Return OpenCode MCP registration payload based on agent_provider.
+
+        Auto-connect requires a headed Chrome with a remote debugging server,
+        so it is dropped in headless mode in favor of an MCP-spawned headless
+        Chromium.
+        """
         if self.agent_provider == "chrome-mcp":
             self.mcp_name = f"chrome-devtools-{self._session_id}"
+            cmd = ["npx", "-y", "chrome-devtools-mcp@latest", "--no-usage-statistics"]
+            if self.headless:
+                cmd.append("--headless")
+            else:
+                cmd.append("--autoConnect")
             return {
                 "name": self.mcp_name,
                 "config": {
                     "type": "local",
-                    "command": ["npx", "-y", "chrome-devtools-mcp@latest", "--autoConnect", "--no-usage-statistics"],
+                    "command": cmd,
                     "enabled": True,
                     "timeout": 30000,
                 },
             }
         self.mcp_name = f"playwright-{self._session_id}"
+        cmd = [
+            "npx",
+            "-y",
+            "rae-playwright-mcp@latest",
+            "run-mcp-server",
+            "--run-id",
+            self.mcp_run_id,
+        ]
+        if self.headless:
+            cmd.append("--headless")
         return {
             "name": self.mcp_name,
             "config": {
                 "type": "local",
-                "command": [
-                    "npx",
-                    "-y",
-                    "rae-playwright-mcp@latest",
-                    "run-mcp-server",
-                    "--run-id",
-                    self.mcp_run_id,
-                ],
+                "command": cmd,
                 "enabled": True,
                 "timeout": 30000,
             },
@@ -450,6 +482,7 @@ class CopilotAutoEngineer:
     ):
         from .copilot_engineer import CopilotEngineer
 
+        headless = kwargs.pop("headless", False)
         har_dir = get_har_dir(run_id, output_dir)
         har_path = har_dir / "recording.har"
 
@@ -463,6 +496,7 @@ class CopilotAutoEngineer:
         )
         self.mcp_run_id = run_id
         self.agent_provider = agent_provider
+        self.headless = headless
 
     def start_sync(self) -> None:
         self._engineer.start_sync()
@@ -526,25 +560,33 @@ class CopilotAutoEngineer:
 
             if self.agent_provider == "chrome-mcp":
                 mcp_server_name = "chrome-devtools"
+                chrome_args = ["-y", "chrome-devtools-mcp@latest", "--no-usage-statistics"]
+                if self.headless:
+                    chrome_args.append("--headless")
+                else:
+                    chrome_args.append("--autoConnect")
                 mcp_config = {
                     "type": "local",
                     "command": "npx",
-                    "args": ["-y", "chrome-devtools-mcp@latest", "--autoConnect", "--no-usage-statistics"],
+                    "args": chrome_args,
                     "tools": ["*"],
                     "timeout": 30000,
                 }
             else:
                 mcp_server_name = "playwright"
+                pw_args = [
+                    "-y",
+                    "rae-playwright-mcp@latest",
+                    "run-mcp-server",
+                    "--run-id",
+                    self.mcp_run_id,
+                ]
+                if self.headless:
+                    pw_args.append("--headless")
                 mcp_config = {
                     "type": "local",
                     "command": "npx",
-                    "args": [
-                        "-y",
-                        "rae-playwright-mcp@latest",
-                        "run-mcp-server",
-                        "--run-id",
-                        self.mcp_run_id,
-                    ],
+                    "args": pw_args,
                     "tools": ["*"],
                     "timeout": 30000,
                 }
