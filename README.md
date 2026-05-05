@@ -358,7 +358,9 @@ Use these slash commands while in the CLI:
 
 ### Scripted / Agent Usage
 
-The CLI subcommands are scriptable. Pass `--no-interactive` (and/or `--json`) so they fail fast instead of opening prompts, and pipe the structured output into `jq` or another agent.
+The CLI subcommands can be driven by another agent or a wrapper script. Pass `--no-interactive` (and/or `--json`) so they fail fast instead of opening questionary prompts, and pipe the structured output into `jq`.
+
+When `--json` is set: stdout contains exactly one JSON document (the final result), Rich logs and progress are diverted to stderr, and the process exits with a stable code.
 
 ```bash
 # Run an autonomous agent capture and get a single JSON result on stdout
@@ -367,30 +369,41 @@ reverse-api-engineer agent \
   --url https://example.com/jobs \
   --json | jq
 
-# Output (logs go to stderr; one JSON object on stdout):
-# {
-#   "schema_version": 1,
-#   "status": "ok",
-#   "run_id": "deadbeef0001",
-#   "prompt": "capture the public jobs api",
-#   "url": "https://example.com/jobs",
-#   "mode": "auto",
-#   "har_path": "/.../recording.har",
-#   "script_path": "/.../api_client.py",
-#   "usage": { ... },
-#   "error": null
-# }
-
 # List runs / inspect a run as JSON (empty history -> [])
 reverse-api-engineer list --json
 reverse-api-engineer show <run_id> --json
 
-# Run a generated script non-interactively (errors on multiple-script picker
-# or missing-dep prompt instead of blocking)
-reverse-api-engineer run <run_id> --no-interactive --auto-install -- --org acme
+# Run a generated script non-interactively
+#   --no-interactive : never open the script-picker / install confirm
+#   --auto-install   : install missing deps on retry without asking
+reverse-api-engineer run <run_id> --file api_client.py \
+  --no-interactive --auto-install -- --org acme
 ```
 
-Exit codes: `0` success, `1` runtime error, `2` misuse (missing required args).
+#### `agent --json` output schema
+
+| Field            | Type                | Notes                                                                  |
+|------------------|---------------------|------------------------------------------------------------------------|
+| `schema_version` | `int`               | Currently `1`. Bumped on breaking changes.                             |
+| `status`         | `"ok"` \| `"error"` | Top-level result.                                                      |
+| `run_id`         | `string` \| `null`  | Stable id for follow-up `show` / `engineer` / `run` calls.             |
+| `prompt`         | `string`            | The prompt that was passed in.                                         |
+| `url`            | `string` \| `null`  | Optional starting URL.                                                 |
+| `mode`           | `string` \| `null`  | Provider used (`"auto"` for Playwright MCP, `"chrome-mcp"`).           |
+| `har_path`       | `string` \| `null`  | Absolute path to the captured HAR (`recording.har`).                   |
+| `script_path`    | `string` \| `null`  | Absolute path to the generated client when reverse engineering ran.    |
+| `usage`          | `object`            | Token + cost usage from the engineer SDK (`{input_tokens, output_tokens, total_cost}`).|
+| `error`          | `string` \| `null`  | Human-readable error message when `status == "error"`.                 |
+
+#### Exit codes
+
+| Code | Meaning                                                                   |
+|------|---------------------------------------------------------------------------|
+| `0`  | Success.                                                                  |
+| `1`  | Runtime error (capture or engineering failed; details in `error`).        |
+| `2`  | Misuse — required arg missing under `--no-interactive` / `--json`.        |
+
+For `run`, the exit code is the underlying script's return code on success, or `1` if no script was found, or non-zero if `--no-interactive` would otherwise have to prompt.
 
 ## 🔌 Claude Code Plugin
 

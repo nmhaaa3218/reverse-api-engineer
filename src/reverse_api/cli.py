@@ -1307,7 +1307,35 @@ def manual(prompt, url, reverse_engineer, model, output_dir):
     run_manual_capture(prompt, url, reverse_engineer, model, output_dir)
 
 
-@main.command()
+@main.command(
+    epilog="""\b
+Examples:
+  reverse-api-engineer agent
+  reverse-api-engineer agent -p "capture the jobs api" -u https://example.com --no-interactive
+  reverse-api-engineer agent -p "capture the jobs api" --json | jq
+
+\b
+JSON output schema (--json):
+  {
+    "schema_version": 1,
+    "status": "ok" | "error",
+    "run_id": "<id>" | null,
+    "prompt": "...",
+    "url": "..." | null,
+    "mode": "auto" | "chrome-mcp" | null,
+    "har_path": "/abs/path/recording.har" | null,
+    "script_path": "/abs/path/api_client.py" | null,
+    "usage": { "input_tokens": ..., "output_tokens": ..., "total_cost": ... },
+    "error": "<message>" | null
+  }
+
+\b
+Exit codes:
+  0  success
+  1  runtime error (capture or engineering failed)
+  2  misuse (e.g. --prompt missing under --no-interactive / --json)
+"""
+)
 @click.option("--prompt", "-p", default=None, help="Instruction for the autonomous agent.")
 @click.option("--url", "-u", default=None, help="Optional starting URL.")
 @click.option(
@@ -1995,7 +2023,16 @@ def _get_run_details(run: dict) -> dict:
     }
 
 
-@main.command("list")
+@main.command(
+    "list",
+    epilog="""\b
+Examples:
+  reverse-api-engineer list
+  reverse-api-engineer list --mode auto --search jobs --json | jq
+
+JSON output (--json) is always a flat array (possibly empty []).
+""",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as flat JSON array.")
 @click.option("--full", is_flag=True, help="Show all columns (default: compact view).")
 @click.option("--limit", "-n", type=int, default=None, help="Limit number of results.")
@@ -2076,7 +2113,19 @@ def list_runs(as_json, full, limit, mode, model, search):
     console.print(table)
 
 
-@main.command("show")
+@main.command(
+    "show",
+    epilog="""\b
+Examples:
+  reverse-api-engineer show
+  reverse-api-engineer show <run_id> --json | jq
+
+\b
+Exit codes (--json):
+  0  run found
+  1  run not found / no history
+""",
+)
 @click.argument("run_id", required=False)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON object.")
 def show_run(run_id, as_json):
@@ -2188,7 +2237,22 @@ def show_run(run_id, as_json):
     console.print(table)
 
 
-@main.command("run")
+@main.command(
+    "run",
+    epilog="""\b
+Examples:
+  reverse-api-engineer run a450e520ca30
+  reverse-api-engineer run ashby --ls
+  reverse-api-engineer run ashby --file api_client.py -- --org acme --limit 10
+  reverse-api-engineer run a450e520ca30 --file api_client.py --no-interactive --auto-install
+
+\b
+Exit codes:
+  <script's exit code>  the underlying script's return code (0 on success)
+  1                     no script found for the run
+  non-zero              missing --file when multiple scripts exist under --no-interactive
+""",
+)
 @click.argument("identifier")
 @click.argument("script_args", nargs=-1, type=click.UNPROCESSED)
 @click.option("--file", "-f", "file_name", default=None, help="Script filename to run (e.g. api_client.py).")
