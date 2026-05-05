@@ -316,3 +316,93 @@ class TestFollowUpPromptSuppressed:
             result = runner.invoke(agent_cmd, ["--json", "-p", "x"])
         assert result.exit_code == 0, result.output
         assert mock_run.call_args.kwargs["interactive"] is False
+
+
+# ---------------------------------------------------------------------------
+# --headless flag (CI / VPS / scripted)
+# ---------------------------------------------------------------------------
+
+
+class TestHeadlessFlag:
+    """`--headless` wires through to ManualBrowser / auto-engineer constructors
+    and adjusts MCP args (drops --autoConnect for chrome-mcp, adds --headless
+    for both chrome-mcp and playwright)."""
+
+    def test_manual_command_threads_headless(self):
+        from reverse_api.cli import manual as manual_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_manual_capture") as mock_run:
+            result = runner.invoke(manual_cmd, ["-p", "x", "-u", "https://example.com", "--headless"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["headless"] is True
+
+    def test_manual_default_headless_false(self):
+        from reverse_api.cli import manual as manual_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_manual_capture") as mock_run:
+            result = runner.invoke(manual_cmd, ["-p", "x", "-u", "https://example.com"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["headless"] is False
+
+    def test_agent_command_threads_headless(self):
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_agent_capture", return_value={"run_id": "x", "mode": "auto"}) as mock_run:
+            result = runner.invoke(agent_cmd, ["-p", "x", "--json", "--headless"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["headless"] is True
+
+    def test_agent_default_headless_false(self):
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_agent_capture", return_value={"run_id": "x", "mode": "auto"}) as mock_run:
+            result = runner.invoke(agent_cmd, ["-p", "x", "--json"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["headless"] is False
+
+
+class TestHeadlessMcpConfig:
+    """ClaudeAutoEngineer._get_mcp_config arg construction for headed vs headless."""
+
+    def _make(self, agent_provider: str, headless: bool, tmp_path):
+        """Build a ClaudeAutoEngineer without invoking heavy init paths."""
+        from reverse_api.auto_engineer import ClaudeAutoEngineer
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path):
+            with patch("reverse_api.base_engineer.MessageStore"):
+                with patch("reverse_api.base_engineer.SessionManager"):
+                    with patch("reverse_api.auto_engineer.get_har_dir", return_value=tmp_path):
+                        eng = ClaudeAutoEngineer(
+                            run_id="r",
+                            prompt="x",
+                            model="claude-sonnet-4-6",
+                            agent_provider=agent_provider,
+                            headless=headless,
+                        )
+        return eng
+
+    def test_chrome_mcp_headed_uses_autoconnect(self, tmp_path):
+        eng = self._make("chrome-mcp", headless=False, tmp_path=tmp_path)
+        _, cfg = eng._get_mcp_config()
+        assert "--autoConnect" in cfg["args"]
+        assert "--headless" not in cfg["args"]
+
+    def test_chrome_mcp_headless_drops_autoconnect_adds_headless(self, tmp_path):
+        eng = self._make("chrome-mcp", headless=True, tmp_path=tmp_path)
+        _, cfg = eng._get_mcp_config()
+        assert "--autoConnect" not in cfg["args"], "auto-connect cannot work without a real headed Chrome"
+        assert "--headless" in cfg["args"]
+
+    def test_playwright_headless_adds_flag(self, tmp_path):
+        eng = self._make("auto", headless=True, tmp_path=tmp_path)
+        _, cfg = eng._get_mcp_config()
+        assert "--headless" in cfg["args"]
+
+    def test_playwright_headed_no_headless_flag(self, tmp_path):
+        eng = self._make("auto", headless=False, tmp_path=tmp_path)
+        _, cfg = eng._get_mcp_config()
+        assert "--headless" not in cfg["args"]

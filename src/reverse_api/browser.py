@@ -187,11 +187,13 @@ class ManualBrowser:
         prompt: str,
         output_dir: str | None = None,
         use_real_chrome: bool = True,  # New option to use real Chrome
+        headless: bool = False,
     ):
         self.run_id = run_id
         self.prompt = prompt
         self.output_dir = output_dir
         self.use_real_chrome = use_real_chrome
+        self.headless = headless
 
         self.har_dir = get_har_dir(run_id, output_dir)
         self.har_path = self.har_dir / "recording.har"
@@ -249,7 +251,7 @@ class ManualBrowser:
             self._context = self._playwright.chromium.launch_persistent_context(
                 user_data_dir=str(temp_profile_dir),
                 channel="chrome",  # Use real Chrome binary
-                headless=False,
+                headless=self.headless,
                 record_har_path=str(self.har_path),
                 record_har_content="embed",
                 no_viewport=True,
@@ -326,10 +328,15 @@ class ManualBrowser:
             "--use-mock-keychain",
         ]
 
+        # In headless mode (scripted / CI / VPS), keep Playwright's default
+        # `--no-sandbox` so Chromium can launch on hosts without unprivileged
+        # user namespaces. In headed mode we still strip it for a more
+        # realistic browser fingerprint.
+        ignore = ["--enable-automation"] if self.headless else ["--enable-automation", "--no-sandbox"]
         self._browser = self._playwright.chromium.launch(
-            headless=False,
+            headless=self.headless,
             args=chrome_args,
-            ignore_default_args=["--enable-automation", "--no-sandbox"],
+            ignore_default_args=ignore,
         )
 
         # Create context with HAR recording and realistic settings

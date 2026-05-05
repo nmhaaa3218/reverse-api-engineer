@@ -1035,9 +1035,14 @@ def handle_messages(run_id: str, mode_color=THEME_PRIMARY):
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
-def manual(prompt, url, reverse_engineer, model, output_dir):
+@click.option(
+    "--headless",
+    is_flag=True,
+    help="Launch the browser in headless mode (no UI). Required on machines without an X server (CI / VPS).",
+)
+def manual(prompt, url, reverse_engineer, model, output_dir, headless):
     """Start a manual browser session."""
-    run_manual_capture(prompt, url, reverse_engineer, model, output_dir)
+    run_manual_capture(prompt, url, reverse_engineer, model, output_dir, headless=headless)
 
 
 @main.command(
@@ -1089,7 +1094,12 @@ Exit codes:
     is_flag=True,
     help="Emit a single JSON result on stdout (logs go to stderr). Implies --no-interactive.",
 )
-def agent(prompt, url, model, output_dir, no_interactive, as_json):
+@click.option(
+    "--headless",
+    is_flag=True,
+    help="Launch the MCP-controlled browser in headless mode (required on machines without an X server). For chrome-mcp this drops --autoConnect since auto-connect requires a headed Chrome instance.",
+)
+def agent(prompt, url, model, output_dir, no_interactive, as_json, headless):
     """Run autonomous agent browser session.
 
     Agent mode runs an integrated capture + reverse-engineering pipeline; if you
@@ -1117,7 +1127,12 @@ def agent(prompt, url, model, output_dir, no_interactive, as_json):
 
     if not as_json:
         run_agent_capture(
-            prompt=prompt, url=url, model=model, output_dir=output_dir, interactive=interactive
+            prompt=prompt,
+            url=url,
+            model=model,
+            output_dir=output_dir,
+            interactive=interactive,
+            headless=headless,
         )
         return
 
@@ -1130,6 +1145,7 @@ def agent(prompt, url, model, output_dir, no_interactive, as_json):
                 model=model,
                 output_dir=output_dir,
                 interactive=interactive,
+                headless=headless,
             )
             payload = _build_agent_payload(result, prompt=prompt, url=url, output_dir=output_dir)
         except KeyboardInterrupt:
@@ -1146,7 +1162,7 @@ def agent(prompt, url, model, output_dir, no_interactive, as_json):
     sys.exit(0 if payload["status"] == "ok" else 1)
 
 
-def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None, output_dir=None):
+def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None, output_dir=None, headless=False):
     """Shared logic for manual capture."""
     output_dir = output_dir or config_manager.get("output_dir")
 
@@ -1180,7 +1196,7 @@ def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None,
         paths={"har_dir": str(get_har_dir(run_id, output_dir))},
     )
 
-    browser = ManualBrowser(run_id=run_id, prompt=prompt, output_dir=output_dir)
+    browser = ManualBrowser(run_id=run_id, prompt=prompt, output_dir=output_dir, headless=headless)
     har_path = browser.start(start_url=url)
 
     if reverse_engineer:
@@ -1205,7 +1221,7 @@ def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None,
         console.print(f" [dim]>[/dim] [dim]use 'reverse-api-engineer engineer {run_id}' to engineer later[/dim]\n")
 
 
-def run_agent_capture(prompt=None, url=None, model=None, output_dir=None, interactive=True):
+def run_agent_capture(prompt=None, url=None, model=None, output_dir=None, interactive=True, headless=False):
     """Shared logic for agent capture mode."""
     output_dir = output_dir or config_manager.get("output_dir")
 
@@ -1230,6 +1246,7 @@ def run_agent_capture(prompt=None, url=None, model=None, output_dir=None, intera
         output_dir=output_dir,
         agent_provider=agent_provider,
         interactive=interactive,
+        headless=headless,
     )
 
 
@@ -1283,7 +1300,13 @@ def run_collector(prompt=None, model=None, output_dir=None):
 
 
 def run_auto_capture(
-    prompt=None, url=None, model=None, output_dir=None, agent_provider="auto", interactive=True
+    prompt=None,
+    url=None,
+    model=None,
+    output_dir=None,
+    agent_provider="auto",
+    interactive=True,
+    headless=False,
 ):
     """Auto mode: LLM-driven browser automation + real-time reverse engineering."""
     output_dir = output_dir or config_manager.get("output_dir")
@@ -1301,7 +1324,7 @@ def run_auto_capture(
         url = options.get("url")
         model = options["model"]
 
-    if agent_provider == "chrome-mcp":
+    if agent_provider == "chrome-mcp" and not headless:
         console.print()
         console.print(" [dim]chrome devtools mcp (auto-connect)[/dim]")
         console.print(" [dim]controlling your real chrome browser[/dim]")
@@ -1315,6 +1338,11 @@ def run_auto_capture(
         console.print()
         console.print(" [dim]warning: the agent will execute actions on your browser[/dim]")
         console.print(" [dim]avoid browsing sensitive sites during the session[/dim]")
+        console.print()
+    elif agent_provider == "chrome-mcp" and headless:
+        console.print()
+        console.print(" [dim]chrome devtools mcp (headless)[/dim]")
+        console.print(" [dim]auto-connect disabled — mcp will spawn its own headless chrome[/dim]")
         console.print()
 
     run_id = generate_run_id()
@@ -1349,6 +1377,7 @@ def run_auto_capture(
                 sdk=sdk,
                 output_language=output_language,
                 interactive=interactive,
+                headless=headless,
             )
         elif sdk == "copilot":
             from .auto_engineer import CopilotAutoEngineer
@@ -1363,6 +1392,7 @@ def run_auto_capture(
                 sdk=sdk,
                 output_language=output_language,
                 interactive=interactive,
+                headless=headless,
             )
         else:
             from .auto_engineer import ClaudeAutoEngineer
@@ -1377,6 +1407,7 @@ def run_auto_capture(
                 sdk=sdk,
                 output_language=output_language,
                 interactive=interactive,
+                headless=headless,
             )
 
         # Start sync before analysis
