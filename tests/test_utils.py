@@ -11,7 +11,6 @@ from reverse_api.utils import (
     check_for_updates,
     generate_folder_name,
     generate_run_id,
-    get_actions_path,
     get_app_dir,
     get_base_output_dir,
     get_collected_dir,
@@ -22,9 +21,6 @@ from reverse_api.utils import (
     get_messages_path,
     get_project_root,
     get_timestamp,
-    parse_codegen_tag,
-    parse_engineer_prompt,
-    parse_record_only_tag,
 )
 
 
@@ -66,177 +62,6 @@ class TestSlugify:
         """Handles string with only special chars."""
         result = _slugify("!@#$%")
         assert result == ""
-
-
-class TestParseEngineerPrompt:
-    """Test parse_engineer_prompt function."""
-
-    def test_empty_input(self):
-        """Empty input returns defaults."""
-        result = parse_engineer_prompt("")
-        assert result["run_id"] is None
-        assert result["fresh"] is False
-        assert result["docs"] is False
-        assert result["prompt"] == ""
-        assert result["is_tag_command"] is False
-        assert result["error"] is None
-
-    def test_none_input(self):
-        """None input returns defaults."""
-        result = parse_engineer_prompt(None)
-        assert result["prompt"] == ""
-
-    def test_standalone_docs_with_history(self):
-        """@docs resolves latest run from session manager."""
-        mock_sm = MagicMock()
-        mock_sm.get_history.return_value = [{"run_id": "latest123"}]
-        result = parse_engineer_prompt("@docs", session_manager=mock_sm)
-        assert result["run_id"] == "latest123"
-        assert result["docs"] is True
-        assert result["is_tag_command"] is True
-
-    def test_standalone_docs_no_history(self):
-        """@docs with empty history returns error."""
-        mock_sm = MagicMock()
-        mock_sm.get_history.return_value = []
-        result = parse_engineer_prompt("@docs", session_manager=mock_sm)
-        assert result["error"] == "no runs found in history"
-
-    def test_standalone_docs_no_session_manager(self):
-        """@docs without session_manager returns None run_id."""
-        result = parse_engineer_prompt("@docs")
-        assert result["run_id"] is None
-        assert result["docs"] is True
-
-    def test_id_tag_basic(self):
-        """@id <run_id> parses correctly."""
-        result = parse_engineer_prompt("@id abc123 improve the auth")
-        assert result["run_id"] == "abc123"
-        assert result["prompt"] == "improve the auth"
-        assert result["is_tag_command"] is True
-
-    def test_id_tag_with_fresh(self):
-        """@id with --fresh flag."""
-        result = parse_engineer_prompt("@id abc123 --fresh start over")
-        assert result["run_id"] == "abc123"
-        assert result["fresh"] is True
-        assert result["prompt"] == "start over"
-
-    def test_id_tag_with_docs(self):
-        """@id with @docs flag."""
-        result = parse_engineer_prompt("@id abc123 @docs generate openapi")
-        assert result["run_id"] == "abc123"
-        assert result["docs"] is True
-        assert result["prompt"] == "generate openapi"
-
-    def test_id_tag_with_fresh_and_docs(self):
-        """@id with both --fresh and @docs."""
-        result = parse_engineer_prompt("@id abc123 --fresh @docs regenerate")
-        assert result["run_id"] == "abc123"
-        assert result["fresh"] is True
-        assert result["docs"] is True
-        assert result["prompt"] == "regenerate"
-
-    def test_id_tag_no_prompt(self):
-        """@id with no trailing prompt."""
-        result = parse_engineer_prompt("@id abc123")
-        assert result["run_id"] == "abc123"
-        assert result["prompt"] == ""
-
-    def test_plain_text_with_session_manager(self):
-        """Plain text resolves latest run via session manager."""
-        mock_sm = MagicMock()
-        mock_sm.get_history.return_value = [{"run_id": "latest456"}]
-        result = parse_engineer_prompt("fix the auth handler", session_manager=mock_sm)
-        assert result["run_id"] == "latest456"
-        assert result["prompt"] == "fix the auth handler"
-        assert result["is_tag_command"] is False
-
-    def test_plain_text_no_session_manager(self):
-        """Plain text without session manager returns None run_id."""
-        result = parse_engineer_prompt("fix the auth handler")
-        assert result["run_id"] is None
-        assert result["prompt"] == "fix the auth handler"
-
-    def test_plain_text_empty_history(self):
-        """Plain text with empty history returns error."""
-        mock_sm = MagicMock()
-        mock_sm.get_history.return_value = []
-        result = parse_engineer_prompt("fix something", session_manager=mock_sm)
-        assert result["error"] == "no runs found in history"
-
-
-class TestParseRecordOnlyTag:
-    """Test parse_record_only_tag function."""
-
-    def test_empty_string(self):
-        """Empty string returns empty prompt and False."""
-        prompt, is_record = parse_record_only_tag("")
-        assert prompt == ""
-        assert is_record is False
-
-    def test_no_tag(self):
-        """No tag returns original prompt."""
-        prompt, is_record = parse_record_only_tag("capture the api")
-        assert prompt == "capture the api"
-        assert is_record is False
-
-    def test_with_tag(self):
-        """@record-only tag is detected and removed."""
-        prompt, is_record = parse_record_only_tag("@record-only capture traffic")
-        assert prompt == "capture traffic"
-        assert is_record is True
-
-    def test_tag_case_insensitive(self):
-        """Tag is case insensitive."""
-        prompt, is_record = parse_record_only_tag("@RECORD-ONLY capture")
-        assert is_record is True
-        assert prompt == "capture"
-
-    def test_tag_at_end(self):
-        """Tag at end of prompt."""
-        prompt, is_record = parse_record_only_tag("capture traffic @record-only")
-        assert is_record is True
-        assert prompt == "capture traffic"
-
-    def test_none_input(self):
-        """None input returns empty and False."""
-        prompt, is_record = parse_record_only_tag(None)
-        assert prompt == ""
-        assert is_record is False
-
-
-class TestParseCodegenTag:
-    """Test parse_codegen_tag function."""
-
-    def test_empty_string(self):
-        """Empty string returns empty prompt and False."""
-        prompt, is_codegen = parse_codegen_tag("")
-        assert prompt == ""
-        assert is_codegen is False
-
-    def test_no_tag(self):
-        """No tag returns original prompt."""
-        prompt, is_codegen = parse_codegen_tag("automate this")
-        assert prompt == "automate this"
-        assert is_codegen is False
-
-    def test_with_tag(self):
-        """@codegen tag is detected and removed."""
-        prompt, is_codegen = parse_codegen_tag("@codegen login flow")
-        assert prompt == "login flow"
-        assert is_codegen is True
-
-    def test_tag_case_insensitive(self):
-        """Tag is case insensitive."""
-        prompt, is_codegen = parse_codegen_tag("@CODEGEN login")
-        assert is_codegen is True
-
-    def test_none_input(self):
-        """None input returns empty and False."""
-        prompt, is_codegen = parse_codegen_tag(None)
-        assert prompt == ""
-        assert is_codegen is False
 
 
 class TestGenerateRunId:
@@ -420,17 +245,6 @@ class TestGetDocsDir:
         """Too long run_id raises ValueError."""
         with pytest.raises(ValueError, match="too long"):
             get_docs_dir("x" * 65)
-
-
-class TestGetActionsPath:
-    """Test get_actions_path."""
-
-    def test_returns_actions_json(self, tmp_path):
-        """Returns actions.json inside har dir."""
-        with patch("reverse_api.utils.get_base_output_dir", return_value=tmp_path):
-            path = get_actions_path("run123")
-            assert path.name == "actions.json"
-            assert "har" in str(path)
 
 
 class TestGetCollectedDir:

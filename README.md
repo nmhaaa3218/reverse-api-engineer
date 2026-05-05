@@ -33,7 +33,6 @@ No more manual reverse engineering—just browse, capture, and get clean API cod
   - [Engineer Mode](#engineer-mode)
   - [Agent Mode](#agent-mode)
   - [Collector Mode](#collector-mode)
-- [Tags](#tags)
 - [Configuration](#-configuration)
   - [Model Selection](#model-selection)
   - [Agent Configuration](#agent-configuration)
@@ -48,7 +47,7 @@ No more manual reverse engineering—just browse, capture, and get clean API cod
 ## ✨ Features
 
 - 🌐 **Browser Automation**: Built on Playwright with stealth mode for realistic browsing
-- 🤖 **Autonomous Agent Mode**: Fully automated browser interaction using AI agents (auto mode with MCP, browser-use, stagehand)
+- 🤖 **Autonomous Agent Mode**: Fully automated browser interaction using AI agents via MCP (Playwright MCP or Chrome DevTools MCP)
 - 📊 **HAR Recording**: Captures all network traffic in HTTP Archive format
 - 🧠 **AI-Powered Generation**: Uses Claude 4.6 to analyze traffic and generate clean Python code
 - 🔍 **Collector Mode**: Data collection with automatic JSON/CSV export
@@ -57,7 +56,6 @@ No more manual reverse engineering—just browse, capture, and get clean API cod
 - 📦 **Production Ready**: Generated scripts include error handling, type hints, and documentation
 - 💾 **Session History**: All runs saved locally with full message logs
 - 💰 **Cost Tracking**: Detailed token usage and cost estimation with cache support
-- 🏷️ **Tag System**: Powerful tags for fine-grained control (@record-only, @codegen, @docs, @id)
 
 ### Limitations
 
@@ -68,21 +66,12 @@ No more manual reverse engineering—just browse, capture, and get clean API cod
 
 ### Using uv (recommended)
 ```bash
-# Basic installation
 uv tool install reverse-api-engineer
-
-# With agent mode support (includes browser-use with HAR recording)
-uv tool install 'reverse-api-engineer[agent]' --with 'browser-use @ git+https://github.com/browser-use/browser-use.git@49a345fb19e9f12befc5cc1658e0033873892455'
 ```
 
 ### Using pip
 ```bash
-# Basic installation
 pip install reverse-api-engineer
-
-# With agent mode support
-pip install 'reverse-api-engineer[agent]'
-pip install git+https://github.com/browser-use/browser-use.git@49a345fb19e9f12befc5cc1658e0033873892455
 ```
 
 ### Post-installation
@@ -174,9 +163,8 @@ Fully automated browser interaction using AI agents:
 
 **Agent Provider Options:**
 
-- **auto** (default): Uses MCP-based browser automation with Claude Agent SDK & Opencode. Combines browser control and real-time reverse engineering in a single workflow. No additional installation required beyond the base package.
-- **browser-use**: Uses browser-use library for browser automation. Requires installation with `[agent]` extra and browser-use from specific git commit (includes HAR recording support).
-- **stagehand**: Uses Stagehand for browser automation with Computer Use models.
+- **auto** (default): Uses Playwright MCP browser automation with Claude Agent SDK & Opencode. Combines browser control and real-time reverse engineering in a single workflow.
+- **chrome-mcp**: Uses [Chrome DevTools MCP](https://www.npmjs.com/package/chrome-devtools-mcp) to drive your real Chrome browser (with existing sessions, cookies, and auth). Requires Chrome 146+ and Node.js 20.19+.
 
 Change agent provider in `/settings` → "agent provider".
 
@@ -210,49 +198,12 @@ $ reverse-api-engineer
 # Data saved to: ./collected/js_frameworks/
 ```
 
-## 🏷️ Tags
-
-Tags provide additional control and functionality within each mode:
-
-### Manual/Agent Mode Tags
-
-- **`@record-only`** - Record HAR file only, skip reverse engineering step
-  - Example: `@record-only navigate checkout flow`
-  - Useful when you want to capture traffic for later analysis
-
-- **`@codegen`** - Record browser actions and generate Playwright automation script
-  - Example: `@codegen navigate to google`
-  - Captures clicks, fills, and navigations to create a reusable Playwright script
-
-### Engineer Mode Tags
-
-- **`@id <run_id>`** - Switch context to a specific run ID
-  - Example: `@id abc123`
-  - Loads a previous capture session for re-engineering
-
-- **`@id <run_id> <prompt>`** - Run engineer on a specific run with instructions
-  - Example: `@id abc123 extract user profile`
-  - Re-processes a capture with new instructions
-
-- **`@id <run_id> --fresh <prompt>`** - Start fresh (ignore previous scripts)
-  - Example: `@id abc123 --fresh restart analysis`
-  - Generates new code from scratch, ignoring previous implementations
-
-- **`@docs`** - Generate API documentation (OpenAPI spec) for the latest run
-  - Example: `@docs`
-  - Creates OpenAPI specification from captured traffic
-
-- **`@id <run_id> @docs`** - Generate API documentation for a specific run
-  - Example: `@id abc123 @docs`
-  - Creates OpenAPI specification for a specific capture session
-
 ## 🔧 Configuration
 
 Settings stored in `~/.reverse-api/config.json`:
 ```json
 {
   "agent_provider": "auto",
-  "browser_use_model": "bu-llm",
   "claude_code_model": "claude-sonnet-4-6",
   "collector_model": "claude-sonnet-4-6",
   "opencode_model": "claude-sonnet-4-6",
@@ -260,8 +211,7 @@ Settings stored in `~/.reverse-api/config.json`:
   "output_dir": null,
   "output_language": "python",
   "real_time_sync": true,
-  "sdk": "claude",
-  "stagehand_model": "openai/computer-use-preview-2025-03-11"
+  "sdk": "claude"
 }
 ```
 
@@ -284,32 +234,12 @@ If you use Opencode, look at the [models](https://models.dev).
 Configure AI agents for autonomous browser automation.
 
 **Agent Providers:**
-- **auto** (default): MCP-based browser automation with real-time reverse engineering. Uses Claude Agent SDK with browser MCP tools. Combines browser control and API reverse engineering in a single unified workflow. Works with Claude SDK (default) or OpenCode SDK.
-- **browser-use**: Supports Browser-Use LLM, OpenAI, and Google models. Requires installation with `[agent]` extra.
-- **stagehand**: Supports OpenAI and Anthropic Computer Use models
+- **auto** (default): Playwright MCP browser automation with real-time reverse engineering. Uses Claude Agent SDK with browser MCP tools. Combines browser control and API reverse engineering in a single unified workflow. Works with Claude SDK (default) or OpenCode SDK.
+- **chrome-mcp**: Drives your real Chrome browser via [Chrome DevTools MCP](https://www.npmjs.com/package/chrome-devtools-mcp). Useful when you need existing sessions, cookies, or auth. Requires Chrome 146+ and Node.js 20.19+; enable auto-connect at `chrome://inspect/#remote-debugging`.
 
-**Agent Models:**
+The agent's reasoning model is the same as the SDK model — see [Model Selection](#model-selection).
 
-**Browser-Use Provider:**
-- `bu-llm` (default) - Requires `BROWSER_USE_API_KEY`
-- `openai/gpt-4`, `openai/gpt-3.5-turbo` - Requires `OPENAI_API_KEY`
-- `google/gemini-pro`, `google/gemini-1.5-pro` - Requires `GOOGLE_API_KEY`
-
-**Stagehand Provider (Computer Use only):**
-- `openai/computer-use-preview-2025-03-11` - Requires `OPENAI_API_KEY`
-- `anthropic/claude-sonnet-4-6-20260301` - Requires `ANTHROPIC_API_KEY`
-- `anthropic/claude-haiku-4-5-20251001` - Requires `ANTHROPIC_API_KEY`
-- `anthropic/claude-opus-4-6-20260301` - Requires `ANTHROPIC_API_KEY`
-
-**Setting API Keys:**
-```bash
-export BROWSER_USE_API_KEY="your-api-key"  # For Browser-Use
-export OPENAI_API_KEY="your-api-key"       # For OpenAI models
-export ANTHROPIC_API_KEY="your-api-key"    # For Anthropic models
-export GOOGLE_API_KEY="your-api-key"       # For Google models
-```
-
-Change in `/settings` → "agent provider" and "agent model"
+Change in `/settings` → "agent provider"
 
 ### SDK Selection
 

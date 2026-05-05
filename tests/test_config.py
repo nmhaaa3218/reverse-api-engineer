@@ -63,33 +63,19 @@ class TestConfigMigration:
         cm = ConfigManager(config_path)
         assert cm.get("claude_code_model") == "new"
 
-    def test_migrate_agent_model_to_browser_use_model(self, config_path):
-        """Old 'agent_model' migrates to 'browser_use_model' for browser-use provider."""
+    def test_removed_browser_use_provider_resets_to_auto(self, config_path):
+        """Legacy 'browser-use' agent_provider falls back to 'auto'."""
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps({"agent_model": "openai/gpt-4", "agent_provider": "browser-use"}))
+        config_path.write_text(json.dumps({"agent_provider": "browser-use"}))
         cm = ConfigManager(config_path)
-        assert cm.get("browser_use_model") == "openai/gpt-4"
+        assert cm.get("agent_provider") == "auto"
 
-    def test_migrate_agent_model_to_stagehand_model(self, config_path):
-        """Old 'agent_model' migrates to 'stagehand_model' for stagehand provider."""
+    def test_removed_stagehand_provider_resets_to_auto(self, config_path):
+        """Legacy 'stagehand' agent_provider falls back to 'auto'."""
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps({"agent_model": "openai/cu-preview", "agent_provider": "stagehand"}))
+        config_path.write_text(json.dumps({"agent_provider": "stagehand"}))
         cm = ConfigManager(config_path)
-        assert cm.get("stagehand_model") == "openai/cu-preview"
-
-    def test_migrate_agent_model_default_provider(self, config_path):
-        """Old 'agent_model' defaults to browser-use migration."""
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps({"agent_model": "bu-llm"}))
-        cm = ConfigManager(config_path)
-        assert cm.get("browser_use_model") == "bu-llm"
-
-    def test_no_migrate_agent_model_if_target_exists(self, config_path):
-        """Migration skipped if target key already exists."""
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps({"agent_model": "old", "browser_use_model": "new"}))
-        cm = ConfigManager(config_path)
-        assert cm.get("browser_use_model") == "new"
+        assert cm.get("agent_provider") == "auto"
 
 
 class TestConfigManagerOperations:
@@ -157,16 +143,15 @@ class TestDefaultConfig:
         """DEFAULT_CONFIG contains all expected keys."""
         expected_keys = {
             "agent_provider",
-            "browser_use_model",
             "claude_code_model",
             "collector_model",
+            "copilot_model",
             "opencode_model",
             "opencode_provider",
             "output_dir",
             "output_language",
             "real_time_sync",
             "sdk",
-            "stagehand_model",
         }
         assert set(DEFAULT_CONFIG.keys()) == expected_keys
 

@@ -36,11 +36,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-agent = [
-    # browser-use must be installed separately from git (PyPI doesn't allow git dependencies)
-    # See installation instructions in README
-    "stagehand"
-]
 pricing = [
     "litellm>=1.83.0",
 ]

@@ -5,8 +5,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG = {
-    "agent_provider": "auto",  # "auto" (Playwright MCP), "chrome-mcp" (Chrome DevTools MCP), "browser-use", or "stagehand"
-    "browser_use_model": "bu-llm",  # "bu-llm" or "{provider}/{model_name}" (e.g. "openai/gpt-5-mini")
+    "agent_provider": "auto",  # "auto" (Playwright MCP) or "chrome-mcp" (Chrome DevTools MCP)
     "claude_code_model": "claude-sonnet-4-6",
     "collector_model": "claude-sonnet-4-6",  # Model for collector mode
     "copilot_model": "gpt-5",  # Model for Copilot SDK sessions
@@ -16,7 +15,6 @@ DEFAULT_CONFIG = {
     "output_language": "python",  # "python", "javascript", or "typescript"
     "real_time_sync": True,  # Enable real-time file sync during engineering
     "sdk": "claude",  # "claude", "opencode", or "copilot"
-    "stagehand_model": "openai/computer-use-preview-2025-03-11",  # "{provider}/{model_name}" format
 }
 
 
@@ -40,15 +38,9 @@ class ConfigManager:
                     if "model" in user_config and "claude_code_model" not in user_config:
                         user_config["claude_code_model"] = user_config["model"]
 
-                    # Migrate "agent_model" -> "browser_use_model" and "stagehand_model"
-                    if "agent_model" in user_config:
-                        agent_provider = user_config.get("agent_provider", "browser-use")
-                        if agent_provider == "stagehand":
-                            if "stagehand_model" not in user_config:
-                                user_config["stagehand_model"] = user_config["agent_model"]
-                        else:
-                            if "browser_use_model" not in user_config:
-                                user_config["browser_use_model"] = user_config["agent_model"]
+                    # Reset removed agent providers to default
+                    if user_config.get("agent_provider") in ("browser-use", "stagehand"):
+                        user_config["agent_provider"] = "auto"
 
                     # Only keep valid keys
                     valid_config = {k: v for k, v in user_config.items() if k in self.config}
