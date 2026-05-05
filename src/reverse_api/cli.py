@@ -1111,8 +1111,14 @@ def agent(prompt, url, model, output_dir, no_interactive, as_json):
             click.echo("error: --prompt is required when --no-interactive is set", err=True)
         sys.exit(2)
 
+    # Either flag must suppress the post-generation follow-up prompt that would
+    # otherwise block on stdin (`input("  > ")`) inside ClaudeAutoEngineer.
+    interactive = not (as_json or no_interactive)
+
     if not as_json:
-        run_agent_capture(prompt=prompt, url=url, model=model, output_dir=output_dir)
+        run_agent_capture(
+            prompt=prompt, url=url, model=model, output_dir=output_dir, interactive=interactive
+        )
         return
 
     payload: dict
@@ -1123,6 +1129,7 @@ def agent(prompt, url, model, output_dir, no_interactive, as_json):
                 url=url,
                 model=model,
                 output_dir=output_dir,
+                interactive=interactive,
             )
             payload = _build_agent_payload(result, prompt=prompt, url=url, output_dir=output_dir)
         except KeyboardInterrupt:
@@ -1198,7 +1205,7 @@ def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None,
         console.print(f" [dim]>[/dim] [dim]use 'reverse-api-engineer engineer {run_id}' to engineer later[/dim]\n")
 
 
-def run_agent_capture(prompt=None, url=None, model=None, output_dir=None):
+def run_agent_capture(prompt=None, url=None, model=None, output_dir=None, interactive=True):
     """Shared logic for agent capture mode."""
     output_dir = output_dir or config_manager.get("output_dir")
 
@@ -1222,6 +1229,7 @@ def run_agent_capture(prompt=None, url=None, model=None, output_dir=None):
         model=model,
         output_dir=output_dir,
         agent_provider=agent_provider,
+        interactive=interactive,
     )
 
 
@@ -1274,7 +1282,9 @@ def run_collector(prompt=None, model=None, output_dir=None):
         traceback.print_exc()
 
 
-def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_provider="auto"):
+def run_auto_capture(
+    prompt=None, url=None, model=None, output_dir=None, agent_provider="auto", interactive=True
+):
     """Auto mode: LLM-driven browser automation + real-time reverse engineering."""
     output_dir = output_dir or config_manager.get("output_dir")
 
@@ -1338,6 +1348,7 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
                 output_language=output_language,
+                interactive=interactive,
             )
         elif sdk == "copilot":
             from .auto_engineer import CopilotAutoEngineer
@@ -1351,6 +1362,7 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
                 output_language=output_language,
+                interactive=interactive,
             )
         else:
             from .auto_engineer import ClaudeAutoEngineer
@@ -1364,6 +1376,7 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
                 output_language=output_language,
+                interactive=interactive,
             )
 
         # Start sync before analysis
@@ -1478,6 +1491,9 @@ def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json):
     # without --fresh, --prompt is additive so the captured run's context is preserved.
     main_prompt = prompt if fresh else None
     additional = prompt if (prompt and not fresh) else None
+    # Either flag must suppress the post-generation follow-up prompt that
+    # would otherwise block on stdin (`input("  > ")`) inside ClaudeEngineer.
+    interactive = not (as_json or no_interactive)
 
     if not as_json:
         run_engineer(
@@ -1487,6 +1503,7 @@ def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json):
             model=model,
             output_dir=output_dir,
             is_fresh=fresh,
+            interactive=interactive,
         )
         return
 
@@ -1500,6 +1517,7 @@ def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json):
                 model=model,
                 output_dir=output_dir,
                 is_fresh=fresh,
+                interactive=interactive,
             )
             payload = _build_engineer_payload(result, run_id=run_id, prompt=prompt, fresh=fresh)
         except KeyboardInterrupt:
@@ -1525,6 +1543,7 @@ def run_engineer(
     additional_instructions=None,
     is_fresh=False,
     output_mode="client",
+    interactive=True,
 ):
     """Shared logic for reverse engineering."""
     if not har_path or not prompt:
@@ -1566,6 +1585,7 @@ def run_engineer(
             is_fresh=is_fresh,
             output_language=output_language,
             output_mode=output_mode,
+            interactive=interactive,
         )
     elif sdk == "copilot":
         result = run_reverse_engineering(
@@ -1581,6 +1601,7 @@ def run_engineer(
             is_fresh=is_fresh,
             output_language=output_language,
             output_mode=output_mode,
+            interactive=interactive,
         )
     else:
         result = run_reverse_engineering(
@@ -1595,6 +1616,7 @@ def run_engineer(
             is_fresh=is_fresh,
             output_language=output_language,
             output_mode=output_mode,
+            interactive=interactive,
         )
 
     if result:

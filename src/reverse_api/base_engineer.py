@@ -42,6 +42,7 @@ class BaseEngineer(ABC):
         is_fresh: bool = False,
         output_language: str = "python",
         output_mode: str = "client",
+        interactive: bool = True,
     ):
         self.run_id = run_id
         self.har_path = har_path
@@ -67,6 +68,10 @@ class BaseEngineer(ABC):
         self.sync_watcher: FileSyncWatcher | None = None
         self.local_scripts_dir: Path | None = None
         self._stderr_error_shown = False
+        # When False, _prompt_follow_up() returns None immediately so the
+        # conversation loop in subclasses ends after the first generation.
+        # Set this from --json / --no-interactive entry points.
+        self.interactive = interactive
 
     def _handle_cli_stderr(self, line: str) -> None:
         """Filter CLI subprocess stderr. Shows full output in DEBUG mode, otherwise shows a single clean error."""
@@ -279,9 +284,16 @@ class BaseEngineer(ABC):
     async def _prompt_follow_up(self) -> str | None:
         """Prompt user for a follow-up message. Returns None to finish.
 
-        Uses plain input() via executor instead of questionary to avoid
-        terminal state issues after the SDK subprocess exits.
+        In non-interactive mode (e.g. --json / --no-interactive) returns None
+        immediately so the conversation loop terminates after the first
+        generation. Otherwise uses plain input() via executor instead of
+        questionary to avoid terminal state issues after the SDK subprocess
+        exits.
         """
+        if not self.interactive:
+            # Still flush sync so any partial output reaches disk before we exit.
+            self.flush_sync()
+            return None
         # Ensure all files are synced locally before waiting for user input
         self.flush_sync()
         self.ui.console.print()

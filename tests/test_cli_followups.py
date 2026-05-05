@@ -200,3 +200,120 @@ class TestRootHelpMentionsScripted:
         assert result.exit_code == 0
         assert "--json" in result.output
         assert "--no-interactive" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Follow-up suppression in non-interactive mode
+# ---------------------------------------------------------------------------
+
+
+class TestFollowUpPromptSuppressed:
+    """Regression for chatgpt-codex-connector PR #65 review (P2):
+
+    `BaseEngineer._prompt_follow_up()` blocks on `input("  > ")` after the
+    first generation. In --json / --no-interactive mode the conversation loop
+    must terminate immediately so stdin is never read; otherwise scripted
+    invocations like `engineer <run_id> --json | jq` hang before emitting the
+    payload.
+    """
+
+    def test_prompt_follow_up_returns_none_when_not_interactive(self, tmp_path):
+        """The base engineer's follow-up prompt short-circuits when
+        interactive=False, without ever touching stdin."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+
+        from reverse_api.base_engineer import BaseEngineer
+
+        class _Eng(BaseEngineer):
+            def _build_prompts(self):
+                return ("", "")
+
+            async def analyze_and_generate(self):
+                return None
+
+        har_path = tmp_path / "test.har"
+        har_path.touch()
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path):
+            with patch("reverse_api.base_engineer.MessageStore"):
+                with patch("reverse_api.base_engineer.SessionManager") as mock_sm:
+                    mock_sm.return_value.get_run.return_value = None
+                    eng = _Eng(
+                        run_id="test123",
+                        har_path=har_path,
+                        prompt="x",
+                        interactive=False,
+                    )
+
+        # Patch input() at the builtin level — the test fails loudly if it's
+        # ever reached, proving the short-circuit happens before stdin access.
+        def _explode(*_args, **_kwargs):
+            raise AssertionError("input() must not be called when interactive=False")
+
+        with patch("builtins.input", side_effect=_explode):
+            result = asyncio.run(eng._prompt_follow_up())
+
+        assert result is None
+
+    def test_engineer_default_interactive_true(self, tmp_path):
+        """Sanity: the default value of interactive on BaseEngineer is True
+        so existing REPL UX is unchanged."""
+        from reverse_api.base_engineer import BaseEngineer
+
+        class _Eng(BaseEngineer):
+            def _build_prompts(self):
+                return ("", "")
+
+            async def analyze_and_generate(self):
+                return None
+
+        har_path = tmp_path / "test.har"
+        har_path.touch()
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path):
+            with patch("reverse_api.base_engineer.MessageStore"):
+                with patch("reverse_api.base_engineer.SessionManager") as mock_sm:
+                    mock_sm.return_value.get_run.return_value = None
+                    eng = _Eng(run_id="test123", har_path=har_path, prompt="x")
+        assert eng.interactive is True
+
+    def test_engineer_command_threads_interactive_through_run_engineer(self):
+        """`engineer --json` must pass interactive=False to run_engineer so
+        BaseEngineer drops the follow-up loop in the SDK."""
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+            result = runner.invoke(engineer, ["abc123", "--json"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["interactive"] is False
+
+    def test_engineer_command_no_interactive_threads_through(self):
+        """`engineer --no-interactive` (without --json) also disables follow-up."""
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+            result = runner.invoke(engineer, ["abc123", "--no-interactive"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["interactive"] is False
+
+    def test_engineer_default_threads_interactive_true(self):
+        """Without flags, run_engineer is called with interactive=True
+        (preserves the current REPL UX)."""
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+            result = runner.invoke(engineer, ["abc123"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["interactive"] is True
+
+    def test_agent_command_threads_interactive_through_run_agent_capture(self):
+        """`agent --json` must propagate interactive=False so
+        ClaudeAutoEngineer drops the follow-up loop too (same code path)."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch(
+            "reverse_api.cli.run_agent_capture",
+            return_value={"run_id": "abc", "mode": "auto", "script_path": None, "usage": {}},
+        ) as mock_run:
+            result = runner.invoke(agent_cmd, ["--json", "-p", "x"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["interactive"] is False
