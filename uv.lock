@@ -2100,9 +2100,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-agent = [
-    { name = "stagehand" },
-]
 collector = [
     { name = "beautifulsoup4" },
     { name = "markdownify" },
@@ -2140,10 +2137,9 @@ requires-dist = [
     { name = "requests", specifier = ">=2.33.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "setproctitle", specifier = ">=1.3.0" },
-    { name = "stagehand", marker = "extra == 'agent'" },
     { name = "watchdog", specifier = ">=3.0.0" },
 ]
-provides-extras = ["agent", "pricing", "collector", "copilot"]
+provides-extras = ["pricing", "collector", "copilot"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2418,26 +2414,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5a/9f/c3695c2d2d4ef70072c3a06992850498b01c6bc9be531950813716b426fa/sse_starlette-3.3.2.tar.gz", hash = "sha256:678fca55a1945c734d8472a6cad186a55ab02840b4f6786f5ee8770970579dcd", size = 32326, upload-time = "2026-02-28T11:24:34.36Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/61/28/8cb142d3fe80c4a2d8af54ca0b003f47ce0ba920974e7990fa6e016402d1/sse_starlette-3.3.2-py3-none-any.whl", hash = "sha256:5c3ea3dad425c601236726af2f27689b74494643f57017cafcb6f8c9acfbb862", size = 14270, upload-time = "2026-02-28T11:24:32.984Z" },
-]
-
-[[package]]
-name = "stagehand"
-version = "3.6.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "anyio" },
-    { name = "distro" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "sniffio" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/57/d1/40c292a0923c5b9032d03fedc7229acf103a979f3d47f2d8d8e3e586ecdd/stagehand-3.6.0.tar.gz", hash = "sha256:d306de4f168eb5d1fd56fab4a8d01bc8e3fe7c68d5673a9cbd939ed5126dbeda", size = 260927, upload-time = "2026-02-25T20:18:55.4Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/4f/5bdebccb945029821eaa82d4623dd2f0d603e86f1e59c55ce66ba164f833/stagehand-3.6.0-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:bbf9f3f67ada735622584d8bed4ff7d911e9b8d645aa592975b4a0c5a5f8e168", size = 34031436, upload-time = "2026-02-25T20:19:03.819Z" },
-    { url = "https://files.pythonhosted.org/packages/b6/a5/c8032ad7894f18e8024803fcd98869b22494ec1a918d89ca229f3c2fddac/stagehand-3.6.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:0752ce8a6a9224fb9979df8150275da7ba5dad20514e5c9ce599929c9a9eaee7", size = 32738841, upload-time = "2026-02-25T20:19:08.143Z" },
-    { url = "https://files.pythonhosted.org/packages/ea/0e/892163c11aa44f0a1facabe73b0909a99e60365ef281172f32613265e30c/stagehand-3.6.0-py3-none-manylinux2014_x86_64.whl", hash = "sha256:136c0c53dc6f73b0e3f1ab06528d52456e4d4cf3ee81562b57b16f98b5b124fb", size = 36827049, upload-time = "2026-02-25T20:18:59.029Z" },
-    { url = "https://files.pythonhosted.org/packages/62/4d/efffa89a8784e45498d98ee62dec85b48b430f8f50a9a0ae38a977f2895b/stagehand-3.6.0-py3-none-win_amd64.whl", hash = "sha256:5ce228596ab1f41faff49814a77767e9c003f45899f78f2c620b0961a238434e", size = 30314762, upload-time = "2026-02-25T20:19:12.543Z" },
 ]
 
 [[package]]

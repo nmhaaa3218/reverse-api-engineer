@@ -1,7 +1,6 @@
 import asyncio
 import json
 import random
-import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,11 +18,10 @@ from questionary import Choice
 from rich.console import Console
 
 from . import __version__
-from .browser import ManualBrowser, run_agent_browser
+from .browser import ManualBrowser
 from .config import ConfigManager
 from .engineer import run_reverse_engineering
 from .messages import MessageStore
-from .playwright_codegen import PlaywrightCodeGenerator
 from .session import SessionManager
 from .tui import (
     ERROR_CTA,
@@ -40,17 +38,12 @@ from .utils import (
     discover_scripts,
     generate_folder_name,
     generate_run_id,
-    get_actions_path,
     get_base_output_dir,
     get_config_path,
     get_har_dir,
     get_history_path,
     get_messages_path,
-    get_scripts_dir,
     get_timestamp,
-    parse_codegen_tag,
-    parse_engineer_prompt,
-    parse_record_only_tag,
     resolve_run,
 )
 
@@ -206,60 +199,15 @@ def prompt_interactive_options(
                     for cmd in commands:
                         if cmd.startswith(text):
                             yield Completion(cmd, start_position=-len(text))
-            # Tag completion for manual/agent modes
-            elif mode_state["mode"] in ("manual", "agent") and text.startswith("@"):
-                # Tags for manual/agent modes with descriptions
-                tags = [
-                    ("@record-only", "record HAR only, skip reverse engineering"),
-                    ("@codegen", "record actions and generate Playwright script"),
-                    ("@help", "show mode-specific help"),
-                ]
-                for tag, meta in tags:
-                    if tag.startswith(text):
-                        yield Completion(
-                            tag,
-                            start_position=-len(text),
-                            display_meta=meta,
-                        )
-            # Tag completion in engineer mode
+            # Run-id completion in engineer mode
             elif mode_state["mode"] == "engineer" and text:
-                if text.startswith("@"):
-                    # Tag completion with descriptions
-                    tags = [
-                        ("@id", "switch context to run ID"),
-                        ("@docs", "generate API documentation"),
-                        ("@help", "show engineer mode help"),
-                    ]
-
-                    # specific check for @id completion
-                    id_match = re.match(r"@id\s+(.*)", text)
-                    if id_match:
-                        prefix = id_match.group(1)
-                        for run_id in self._get_run_ids():
-                            if run_id.startswith(prefix):
-                                yield Completion(
-                                    run_id,
-                                    start_position=-len(prefix),
-                                    display_meta=self._get_run_meta(run_id),
-                                )
-                    else:
-                        # Suggest tags with descriptions
-                        for tag, meta in tags:
-                            if tag.startswith(text):
-                                yield Completion(
-                                    tag,
-                                    start_position=-len(text),
-                                    display_meta=meta,
-                                )
-
-                else:
-                    for run_id in self._get_run_ids():
-                        if run_id.startswith(text):
-                            yield Completion(
-                                run_id,
-                                start_position=-len(text),
-                                display_meta=self._get_run_meta(run_id),
-                            )
+                for run_id in self._get_run_ids():
+                    if run_id.startswith(text):
+                        yield Completion(
+                            run_id,
+                            start_position=-len(text),
+                            display_meta=self._get_run_meta(run_id),
+                        )
 
         def _get_run_ids(self):
             """Get all run IDs from history (newest first)."""
@@ -357,9 +305,6 @@ def prompt_interactive_options(
 
     if prompt.startswith("/"):
         return {"command": prompt.lower(), "mode": mode_state["mode"]}
-
-    if prompt.strip() == "@help":
-        return {"command": "@help", "mode": mode_state["mode"]}
 
     # Return mode in all cases
     result_mode = mode_state["mode"]
@@ -506,15 +451,6 @@ def repl_loop():
                     handle_history(mode_color)
                 elif cmd == "/help" or cmd == "/commands":
                     handle_help(mode_color)
-                elif cmd == "@help":
-                    if current_mode == "engineer":
-                        handle_engineer_help(mode_color)
-                    elif current_mode == "agent":
-                        handle_agent_help(mode_color)
-                    elif current_mode == "collector":
-                        handle_collector_help(mode_color)
-                    elif current_mode == "manual":
-                        handle_manual_help(mode_color)
                 elif cmd.startswith("/messages"):
                     parts = cmd.split(maxsplit=1)
                     if len(parts) > 1:
@@ -531,77 +467,30 @@ def repl_loop():
 
             # Handle different modes
             if mode == "engineer":
-                # Engineer mode
                 raw_input = options.get("run_id")
 
-                # Handle empty input
                 if not raw_input:
-                    console.print(" [dim]Usage:[/dim] @id <run_id> [instructions]")
-                    console.print(" [dim]       [/dim] @docs (generate docs for latest run)")
-                    console.print(" [dim]       [/dim] @id <run_id> @docs [prompt]")
-                    console.print(" [dim]       [/dim] <run_id> (to switch context)")
+                    console.print(" [dim]Usage:[/dim] <run_id> (switch context)")
+                    console.print(" [dim]       [/dim] <prompt> (re-engineer the latest run)")
                     continue
 
-                # Parse tag with session_manager to resolve latest run centrally
-                parsed = parse_engineer_prompt(raw_input, session_manager)
-
-                # Handle parser errors
-                if parsed["error"]:
-                    console.print(f" [red]error:[/red] {parsed['error']}")
-                    continue
-
-                target_run_id = parsed["run_id"]
-                is_fresh = parsed["fresh"]
-                is_docs = parsed["docs"]
-                user_text = parsed["prompt"]
-
-                main_prompt = None
-                add_instr = None
-
-                if parsed["is_tag_command"]:
-                    # Explicit @id or @docs command
-                    # Validate HAR file exists for @docs mode
-                    if is_docs and target_run_id:
-                        run_data = session_manager.get_run(target_run_id)
-                        if run_data:
-                            paths = run_data.get("paths", {})
-                            har_dir = Path(paths.get("har_dir", get_har_dir(target_run_id, None)))
-                        else:
-                            har_dir = get_har_dir(target_run_id, None)
-
-                        har_path = har_dir / "recording.har"
-                        if not har_path.exists():
-                            console.print(f" [red]error:[/red] run {target_run_id} has no HAR file")
-                            console.print(" [dim]tip:[/dim] use @id <run_id> @docs to specify a run with captured traffic")
-                            continue
-
-                    if not target_run_id:
-                        console.print(" [red]error:[/red] invalid @id syntax")
-                        continue
-
-                    # If fresh, user text is new prompt. Else, it's additive.
-                    if is_fresh:
-                        main_prompt = user_text if user_text else None
-                    else:
-                        add_instr = user_text if user_text else None
-
+                # Two cases: input matches a known run_id (switch context) or
+                # it's free text (additive instructions on the latest run).
+                if session_manager.get_run(raw_input):
+                    target_run_id = raw_input
+                    add_instr = None
                 else:
-                    # Implicit mode - parser already resolved latest run
-                    # Check if input is just a run_id (switching context)
-                    if session_manager.get_run(user_text):
-                        target_run_id = user_text
-                        # Just switching run, no new instructions
-                    else:
-                        # Parser resolved latest run, treat input as additive instructions
-                        add_instr = user_text
+                    latest = session_manager.get_history(limit=1)
+                    if not latest:
+                        console.print(" [red]error:[/red] no runs found in history")
+                        continue
+                    target_run_id = latest[0]["run_id"]
+                    add_instr = raw_input
 
                 run_engineer(
                     target_run_id,
-                    prompt=main_prompt,
                     model=options.get("model"),
                     additional_instructions=add_instr,
-                    is_fresh=is_fresh,
-                    output_mode="docs" if is_docs else "client",
                 )
                 continue
 
@@ -610,7 +499,6 @@ def repl_loop():
                 run_agent_capture(
                     prompt=options["prompt"],
                     url=options.get("url"),
-                    reverse_engineer=True,  # Enable reverse engineering
                     model=options.get("model"),
                 )
                 continue
@@ -665,7 +553,6 @@ def handle_settings(mode_color=THEME_PRIMARY):
     # Settings menu (sorted alphabetically)
     choices = [
         Choice(title="Agent Provider", value="agent_provider"),
-        Choice(title="Browser-Use Model", value="browser_use_model"),
         Choice(title="Claude Code Model", value="claude_code_model"),
         Choice(title="Copilot Model", value="copilot_model"),
         Choice(title="OpenCode Model", value="opencode_model"),
@@ -674,7 +561,6 @@ def handle_settings(mode_color=THEME_PRIMARY):
         Choice(title="Output Language", value="output_language"),
         Choice(title="Real-time Sync", value="real_time_sync"),
         Choice(title="SDK", value="sdk"),
-        Choice(title="Stagehand Model", value="stagehand_model"),
         Choice(title="Back", value="back"),
     ]
 
@@ -765,8 +651,6 @@ def handle_settings(mode_color=THEME_PRIMARY):
         provider_choices = [
             Choice(title="auto (Playwright MCP)", value="auto"),
             Choice(title="chrome-mcp (Chrome DevTools MCP)", value="chrome-mcp"),
-            Choice(title="browser-use", value="browser-use"),
-            Choice(title="stagehand", value="stagehand"),
             Choice(title="back", value="back"),
         ]
         provider = questionary.select(
@@ -862,83 +746,6 @@ def handle_settings(mode_color=THEME_PRIMARY):
             else:
                 config_manager.set("opencode_model", new_model)
                 console.print(f" [dim]updated[/dim] opencode model: {new_model}\n")
-
-    elif action == "browser_use_model":
-        from .browser import parse_agent_model
-
-        current = config_manager.get("browser_use_model", "bu-llm")
-        instruction = "(Format: 'bu-llm' or 'provider/model', e.g., 'openai/gpt-4')"
-
-        new_model = questionary.text(
-            " > browser-use model",
-            default=current or "bu-llm",
-            instruction=instruction,
-            qmark="",
-            style=questionary.Style(
-                [
-                    ("question", f"fg:{THEME_SECONDARY}"),
-                    ("instruction", f"fg:{THEME_DIM} italic"),
-                ]
-            ),
-        ).ask()
-        if new_model is not None:
-            new_model = new_model.strip()
-            if not new_model:
-                console.print(" [yellow]error:[/yellow] browser-use model cannot be empty\n")
-            else:
-                # Validate format for browser-use
-                try:
-                    parse_agent_model(new_model, "browser-use")
-                    config_manager.set("browser_use_model", new_model)
-                    console.print(f" [dim]updated[/dim] browser-use model: {new_model}\n")
-                except ValueError as e:
-                    console.print(f" [yellow]error:[/yellow] {e}\n")
-                    console.print(
-                        " [dim]Valid formats:[/dim]\n"
-                        " [dim]  - bu-llm[/dim]\n"
-                        " [dim]  - openai/model_name (e.g., openai/gpt-4)[/dim]\n"
-                        " [dim]  - google/model_name (e.g., google/gemini-pro)[/dim]\n"
-                    )
-
-    elif action == "stagehand_model":
-        from .browser import parse_agent_model
-
-        current = config_manager.get("stagehand_model", "openai/computer-use-preview-2025-03-11")
-        instruction = (
-            "(Format: 'openai/model' or 'anthropic/model', e.g., 'openai/computer-use-preview-2025-03-11' or 'anthropic/claude-sonnet-4-6-20260301')"
-        )
-
-        new_model = questionary.text(
-            " > stagehand model",
-            default=current or "openai/computer-use-preview-2025-03-11",
-            instruction=instruction,
-            qmark="",
-            style=questionary.Style(
-                [
-                    ("question", f"fg:{THEME_SECONDARY}"),
-                    ("instruction", f"fg:{THEME_DIM} italic"),
-                ]
-            ),
-        ).ask()
-        if new_model is not None:
-            new_model = new_model.strip()
-            if not new_model:
-                console.print(" [yellow]error:[/yellow] stagehand model cannot be empty\n")
-            else:
-                # Validate format for stagehand
-                try:
-                    parse_agent_model(new_model, "stagehand")
-                    config_manager.set("stagehand_model", new_model)
-                    console.print(f" [dim]updated[/dim] stagehand model: {new_model}\n")
-                except ValueError as e:
-                    console.print(f" [yellow]error:[/yellow] {e}\n")
-                    console.print(
-                        " [dim]Valid formats for stagehand:[/dim]\n"
-                        " [dim]  - openai/computer-use-preview-2025-03-11[/dim]\n"
-                        " [dim]  - anthropic/claude-sonnet-4-6-20260301[/dim]\n"
-                        " [dim]  - anthropic/claude-haiku-4-5-20251001[/dim]\n"
-                        " [dim]  - anthropic/claude-opus-4-6-20260301[/dim]\n"
-                    )
 
     elif action == "real_time_sync":
         current = config_manager.get("real_time_sync", True)
@@ -1050,130 +857,6 @@ def handle_history(mode_color=THEME_PRIMARY):
             run_engineer(run_id, model=model)
     else:
         console.print(" [dim]> not found[/dim]")
-
-
-def handle_manual_help(mode_color=THEME_PRIMARY):
-    """Show help specific to manual mode."""
-    from rich.table import Table
-
-    console.print()
-    console.print(" [bold white]Manual Mode Help[/bold white]")
-    console.print(" [dim]Launch a browser for manual interaction and capture traffic.[/dim]")
-    console.print()
-
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=f"{mode_color} bold", justify="left", width=30)
-    table.add_column(style="white", justify="left")
-
-    table.add_row("<prompt>", "Describe the task/goal for the session.\n[dim]Example: extract jobs from apple.com[/dim]")
-    table.add_row("", "")
-
-    table.add_row("@record-only [prompt]", "Record HAR only, skip reverse engineering.\n[dim]Example: @record-only[/dim]")
-    table.add_row("", "")
-
-    table.add_row("@codegen [prompt]", "Record actions and generate Playwright script.\n[dim]Example: @codegen navigate to google[/dim]")
-    table.add_row("", "")
-
-    table.add_row("Shift+Tab", "Cycle to other modes (Engineer, Agent).")
-
-    console.print(table)
-    console.print()
-
-
-def handle_agent_help(mode_color=THEME_PRIMARY):
-    """Show help specific to agent mode."""
-    from rich.table import Table
-
-    console.print()
-    console.print(" [bold white]Agent Mode Help[/bold white]")
-    console.print(" [dim]Launch an autonomous AI agent to navigate and perform tasks.[/dim]")
-    console.print()
-
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=f"{mode_color} bold", justify="left", width=30)
-    table.add_column(style="white", justify="left")
-
-    table.add_row("<prompt>", "Instruction for the autonomous agent.\n[dim]Example: Go to google.com and search for 'OpenAI'[/dim]")
-    table.add_row("", "")
-
-    table.add_row("@record-only <prompt>", "Record HAR only, skip reverse engineering.\n[dim]Example: @record-only navigate checkout flow[/dim]")
-    table.add_row("", "")
-
-    table.add_row("Shift+Tab", "Cycle to other modes (Manual, Engineer).")
-    table.add_row("", "")
-
-    table.add_row("Ctrl+R", "Fill prompt with a random task suggestion.\n[dim]Press multiple times to cycle through ideas.[/dim]")
-
-    console.print(table)
-    console.print()
-
-
-def handle_collector_help(mode_color=THEME_PRIMARY):
-    """Show help specific to collector mode."""
-    from rich.table import Table
-
-    console.print()
-    console.print(" [bold white]Collector Mode Help[/bold white]")
-    console.print(" [dim]AI-powered web data collection. Describe what data you want, get JSON/CSV output.[/dim]")
-    console.print()
-
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=f"{mode_color} bold", justify="left", width=30)
-    table.add_column(style="white", justify="left")
-
-    table.add_row(
-        "<prompt>", "Describe data to collect in natural language.\n[dim]Example: Find 10 YC W24 AI startups with name, website, funding[/dim]"
-    )
-    table.add_row("", "")
-
-    table.add_row("Output", "JSON + CSV saved to ./collected/<folder>/")
-    table.add_row("", "")
-
-    table.add_row("Shift+Tab", "Cycle to other modes.")
-
-    console.print(table)
-    console.print()
-
-
-def handle_engineer_help(mode_color=THEME_PRIMARY):
-    """Show help specific to engineer mode."""
-    from rich.table import Table
-
-    console.print()
-    console.print(" [bold white]Engineer Mode Help[/bold white]")
-    console.print(" [dim]Reverse engineer APIs from captured sessions (HAR files).[/dim]")
-    console.print()
-
-    # Syntax table
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=f"{mode_color} bold", justify="left", width=30)
-    table.add_column(style="white", justify="left")
-
-    table.add_row("@id <run_id>", "Switch context to a specific run ID.\n[dim]Example: @id abc123[/dim]")
-    table.add_row("", "")
-
-    table.add_row("@id <run_id> <prompt>", "Run engineer on a specific run with instructions.\n[dim]Example: @id abc123 extract user profile[/dim]")
-    table.add_row("", "")
-
-    table.add_row(
-        "@id <run_id> --fresh <prompt>",
-        "Start fresh (ignore previous scripts) with new instructions.\n[dim]Example: @id abc123 --fresh restart analysis[/dim]",
-    )
-    table.add_row("", "")
-
-    table.add_row("<run_id>", "Quick context switch (same as @id <run_id>).\n[dim]Example: abc123[/dim]")
-    table.add_row("", "")
-
-    table.add_row("<prompt>", "Run engineer on the *current* context/latest run.\n[dim]Example: improve error handling[/dim]")
-    table.add_row("", "")
-
-    table.add_row("@docs", "Generate API documentation (OpenAPI spec) for the latest run.\n[dim]Example: @docs[/dim]")
-    table.add_row("", "")
-
-    table.add_row("@id <run_id> @docs", "Generate API documentation for a specific run.\n[dim]Example: @id abc123 @docs[/dim]")
-
-    console.print(table)
-    console.print()
 
 
 def handle_help(mode_color=THEME_PRIMARY):
@@ -1344,12 +1027,6 @@ Exit codes:
 @click.option("--prompt", "-p", default=None, help="Instruction for the autonomous agent.")
 @click.option("--url", "-u", default=None, help="Optional starting URL.")
 @click.option(
-    "--reverse-engineer/--no-engineer",
-    "reverse_engineer",
-    default=True,
-    help="Run reverse engineering after capture.",
-)
-@click.option(
     "--model",
     "-m",
     type=click.Choice(["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]),
@@ -1367,8 +1044,12 @@ Exit codes:
     is_flag=True,
     help="Emit a single JSON result on stdout (logs go to stderr). Implies --no-interactive.",
 )
-def agent(prompt, url, reverse_engineer, model, output_dir, no_interactive, as_json):
-    """Run autonomous agent browser session."""
+def agent(prompt, url, model, output_dir, no_interactive, as_json):
+    """Run autonomous agent browser session.
+
+    Agent mode runs an integrated capture + reverse-engineering pipeline; if you
+    only want a HAR recording, use `manual --no-engineer` instead.
+    """
     no_interactive = no_interactive or as_json
 
     if no_interactive and not (prompt and prompt.strip()):
@@ -1386,7 +1067,7 @@ def agent(prompt, url, reverse_engineer, model, output_dir, no_interactive, as_j
         sys.exit(2)
 
     if not as_json:
-        run_agent_capture(prompt=prompt, url=url, reverse_engineer=reverse_engineer, model=model, output_dir=output_dir)
+        run_agent_capture(prompt=prompt, url=url, model=model, output_dir=output_dir)
         return
 
     payload: dict
@@ -1395,7 +1076,6 @@ def agent(prompt, url, reverse_engineer, model, output_dir, no_interactive, as_j
             result = run_agent_capture(
                 prompt=prompt,
                 url=url,
-                reverse_engineer=reverse_engineer,
                 model=model,
                 output_dir=output_dir,
             )
@@ -1432,15 +1112,6 @@ def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None,
         reverse_engineer = options["reverse_engineer"]
         model = options["model"]
 
-    # Parse @record-only tag - if present, skip reverse engineering
-    prompt, is_record_only = parse_record_only_tag(prompt)
-    prompt, is_codegen = parse_codegen_tag(prompt)
-
-    if is_record_only:
-        reverse_engineer = False
-    if is_codegen:
-        reverse_engineer = False
-
     run_id = generate_run_id()
     timestamp = get_timestamp()
     sdk = config_manager.get("sdk", "claude")
@@ -1457,7 +1128,7 @@ def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None,
         paths={"har_dir": str(get_har_dir(run_id, output_dir))},
     )
 
-    browser = ManualBrowser(run_id=run_id, prompt=prompt, output_dir=output_dir, enable_action_recording=is_codegen)
+    browser = ManualBrowser(run_id=run_id, prompt=prompt, output_dir=output_dir)
     har_path = browser.start(start_url=url)
 
     if reverse_engineer:
@@ -1476,17 +1147,13 @@ def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None,
                 usage=result.get("usage", {}),
                 paths={"script_path": result.get("script_path")},
             )
-    elif is_codegen:
-        # Generate Playwright script from recorded actions
-        run_playwright_codegen(run_id, prompt, output_dir, start_url=url)
-    elif is_record_only:
-        # Show helpful message for record-only mode
+    else:
         console.print(" [dim]>[/dim] [white]recording complete[/white]")
         console.print(f" [dim]>[/dim] [white]run_id: {run_id}[/white]")
-        console.print(f" [dim]>[/dim] [dim]use @id {run_id} <prompt> to engineer later[/dim]\n")
+        console.print(f" [dim]>[/dim] [dim]use 'reverse-api-engineer engineer {run_id}' to engineer later[/dim]\n")
 
 
-def run_agent_capture(prompt=None, url=None, reverse_engineer=False, model=None, output_dir=None):
+def run_agent_capture(prompt=None, url=None, model=None, output_dir=None):
     """Shared logic for agent capture mode."""
     output_dir = output_dir or config_manager.get("output_dir")
 
@@ -1494,135 +1161,23 @@ def run_agent_capture(prompt=None, url=None, reverse_engineer=False, model=None,
         options = prompt_interactive_options(
             prompt=prompt,
             url=url,
-            reverse_engineer=reverse_engineer,
+            reverse_engineer=False,
             model=model,
         )
         if "command" in options:
             return
         prompt = options["prompt"]
         url = options["url"]
-        reverse_engineer = options["reverse_engineer"]
         model = options["model"]
 
-    # Parse @record-only tag - if present, skip reverse engineering
-    prompt, is_record_only = parse_record_only_tag(prompt)
-    if is_record_only:
-        reverse_engineer = False
-        # Agent mode requires a prompt for @record-only
-        if not prompt or not prompt.strip():
-            console.print(" [red]error:[/red] @record-only requires a prompt in agent mode")
-            console.print(" [dim]tip:[/dim] @record-only <prompt> - e.g., @record-only navigate checkout flow")
-            return
-
-    run_id = generate_run_id()
-    timestamp = get_timestamp()
-    sdk = config_manager.get("sdk", "claude")
-
-    # Get agent models and provider from config
-    browser_use_model = config_manager.get("browser_use_model", "bu-llm")
-    stagehand_model = config_manager.get("stagehand_model", "openai/computer-use-preview-2025-03-11")
-    agent_provider = config_manager.get("agent_provider", "browser-use")
-
-    if agent_provider in ("auto", "chrome-mcp"):
-        return run_auto_capture(
-            prompt=prompt,
-            url=url,
-            model=model,
-            output_dir=output_dir,
-            agent_provider=agent_provider,
-        )
-
-    # Record initial session
-    session_manager.add_run(
-        run_id=run_id,
+    agent_provider = config_manager.get("agent_provider", "auto")
+    return run_auto_capture(
         prompt=prompt,
-        timestamp=timestamp,
         url=url,
         model=model,
-        mode="agent",  # Track mode in history
-        sdk=sdk,
-        paths={"har_dir": str(get_har_dir(run_id, output_dir))},
+        output_dir=output_dir,
+        agent_provider=agent_provider,
     )
-
-    # Run agent browser
-    try:
-        har_path = run_agent_browser(
-            run_id=run_id,
-            prompt=prompt,
-            output_dir=output_dir,
-            browser_use_model=browser_use_model,
-            stagehand_model=stagehand_model,
-            agent_provider=agent_provider,
-            start_url=url,
-        )
-
-        # Optionally run reverse engineering
-        if reverse_engineer:
-            engineer_prompt = prompt
-            try:
-                wants_new_prompt = questionary.confirm(
-                    " > new prompt for engineer?",
-                    default=False,
-                    qmark="",
-                    style=questionary.Style(
-                        [
-                            ("question", f"fg:{THEME_SECONDARY}"),
-                            ("instruction", f"fg:{THEME_DIM} italic"),
-                        ]
-                    ),
-                ).ask()
-
-                if wants_new_prompt is None:
-                    raise KeyboardInterrupt
-
-                if wants_new_prompt:
-                    new_prompt = questionary.text(
-                        " > engineer prompt",
-                        instruction="(Enter to use original)",
-                        default="",
-                        qmark="",
-                        style=questionary.Style(
-                            [
-                                ("question", f"fg:{THEME_SECONDARY}"),
-                                ("instruction", f"fg:{THEME_DIM} italic"),
-                            ]
-                        ),
-                    ).ask()
-
-                    if new_prompt is None:
-                        raise KeyboardInterrupt
-
-                    if new_prompt and new_prompt.strip():
-                        engineer_prompt = new_prompt.strip()
-            except KeyboardInterrupt:
-                pass
-
-            result = run_engineer(
-                run_id=run_id,
-                har_path=har_path,
-                prompt=engineer_prompt,
-                model=model,
-                output_dir=output_dir,
-            )
-            if result:
-                sdk = config_manager.get("sdk", "claude")
-                session_manager.update_run(
-                    run_id=run_id,
-                    sdk=sdk,
-                    usage=result.get("usage", {}),
-                    paths={"script_path": result.get("script_path")},
-                )
-        elif is_record_only:
-            # Show helpful message for record-only mode
-            console.print(" [dim]>[/dim] [white]recording complete[/white]")
-            console.print(f" [dim]>[/dim] [white]run_id: {run_id}[/white]")
-            console.print(f" [dim]>[/dim] [dim]use @id {run_id} <prompt> to engineer later[/dim]\n")
-    except Exception as e:
-        console.print(f" [red]agent mode error: {e}[/red]")
-        console.print(f" [dim]{ERROR_CTA}[/dim]")
-        import traceback
-
-        traceback.print_exc()
 
 
 def run_collector(prompt=None, model=None, output_dir=None):
@@ -1810,48 +1365,23 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
         }
 
 
-def run_playwright_codegen(run_id: str, prompt: str, output_dir: str | None = None, start_url: str | None = None):
-    """Generate Playwright script from recorded actions."""
-    actions_path = get_actions_path(run_id, output_dir)
-    if not actions_path.exists():
-        console.print(" [red]error:[/red] no actions recorded")
-        return
-
-    from .action_recorder import ActionRecorder
-
-    actions = ActionRecorder.load(actions_path)
-    action_list = actions.get_actions()
-
-    # If no explicit start_url, extract from first navigate action
-    if not start_url and action_list:
-        if action_list[0].type == "navigate" and action_list[0].url:
-            start_url = action_list[0].url
-
-    generator = PlaywrightCodeGenerator(action_list, start_url=start_url)
-    script = generator.generate()
-
-    scripts_dir = get_scripts_dir(run_id, output_dir)
-
-    # Handle duplicate file paths
-    script_path = scripts_dir / "automation.py"
-    if script_path.exists():
-        i = 1
-        while (scripts_dir / f"automation_{i}.py").exists():
-            i += 1
-        script_path = scripts_dir / f"automation_{i}.py"
-
-    script_path.write_text(script)
-
-    # Also write requirements.txt
-    (scripts_dir / "requirements.txt").write_text("playwright\n")
-
-    console.print(" [dim]>[/dim] [white]codegen complete[/white]")
-    console.print(f" [dim]>[/dim] [white]{script_path}[/white]")
-    console.print(f" [dim]>[/dim] [dim]run with: uv run python {script_path}[/dim]\n")
-
 
 @main.command()
 @click.argument("run_id")
+@click.option(
+    "--prompt",
+    "-p",
+    default=None,
+    help=(
+        "With --fresh: replace the captured run's original goal. "
+        "Without --fresh: layered as additional instructions on top of the original prompt."
+    ),
+)
+@click.option(
+    "--fresh",
+    is_flag=True,
+    help="Ignore previously generated scripts and re-engineer from scratch.",
+)
 @click.option(
     "--model",
     "-m",
@@ -1859,9 +1389,20 @@ def run_playwright_codegen(run_id: str, prompt: str, output_dir: str | None = No
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
-def engineer(run_id, model, output_dir):
+def engineer(run_id, prompt, fresh, model, output_dir):
     """Run reverse engineering on a previous run."""
-    run_engineer(run_id, model=model, output_dir=output_dir)
+    # --fresh treats --prompt as a full replacement of the original goal;
+    # without --fresh, --prompt is additive so the captured run's context is preserved.
+    main_prompt = prompt if fresh else None
+    additional = prompt if (prompt and not fresh) else None
+    run_engineer(
+        run_id,
+        prompt=main_prompt,
+        additional_instructions=additional,
+        model=model,
+        output_dir=output_dir,
+        is_fresh=fresh,
+    )
 
 
 def run_engineer(

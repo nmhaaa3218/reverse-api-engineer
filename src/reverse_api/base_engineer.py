@@ -504,7 +504,6 @@ class BaseEngineer(ABC):
             scripts_dir=str(self.scripts_dir),
             existing_client_guidance=self._get_existing_client_guidance(),
             additional_instructions=additional_instructions,
-            tag_extra="@docs" if is_docs else "",
             tag_mode_label="Documentation" if is_docs else "Re-engineer",
             run_id=self.run_id,
             har_parent=str(self.har_path.parent),

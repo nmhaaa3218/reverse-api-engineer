@@ -293,11 +293,11 @@ class TestBaseEngineerBuildPrompt:
         system_prompt, user_message = eng._build_prompts()
         assert "Focus on auth" in user_message
 
-    def test_prompt_includes_tag_context(self, tmp_path):
-        """User message includes tag-based workflow context."""
+    def test_prompt_includes_run_context(self, tmp_path):
+        """User message includes run context (target run id, mode label)."""
         eng = self._make_engineer(tmp_path)
         system_prompt, user_message = eng._build_prompts()
-        assert "Tag-Based Workflows" in user_message
+        assert "Run Context" in user_message
         assert eng.run_id in user_message
 
     def test_prompt_includes_existing_client_guidance(self, tmp_path):
