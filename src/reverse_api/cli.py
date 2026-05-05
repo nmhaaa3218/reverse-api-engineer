@@ -119,6 +119,36 @@ def _build_agent_payload(
         "error": final_error,
     }
 
+
+def _build_engineer_payload(
+    result: dict | None,
+    *,
+    run_id: str,
+    prompt: str | None,
+    fresh: bool,
+    error: str | None = None,
+) -> dict:
+    """Normalize an engineer-mode result into a stable JSON shape.
+
+    Mirrors `_build_agent_payload`'s contract minus the agent-specific fields
+    (no `url`, no `mode`, no `har_path`). `prompt` is the value the user passed
+    to --prompt (which may have been used as either a full replacement or as
+    additional instructions depending on --fresh).
+    """
+    result = result if result is not None else {}
+    inner_error = result.get("error") if isinstance(result, dict) else None
+    final_error = error or inner_error or (None if result else "engineering produced no result")
+    return {
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "error" if final_error else "ok",
+        "run_id": run_id,
+        "prompt": prompt,
+        "fresh": fresh,
+        "script_path": result.get("script_path") if isinstance(result, dict) else None,
+        "usage": (result.get("usage") if isinstance(result, dict) else None) or {},
+        "error": final_error,
+    }
+
 # Mode definitions
 MODES = ["agent", "manual", "engineer", "collector"]
 MODE_DESCRIPTIONS = {
@@ -391,8 +421,23 @@ def main(ctx: click.Context):
 
     Run without a subcommand to start the interactive REPL; use agent, manual,
     or engineer for CLI mode.
+
+    Most subcommands accept --json and --no-interactive for scripted use; see
+    `<cmd> --help` for per-command details.
     """
     if ctx.invoked_subcommand is None:
+        # Refuse to drop into the prompt_toolkit REPL when stdin is not a TTY:
+        # without an interactive terminal the REPL would block on stdin
+        # forever (e.g. CI invocations, agent wrappers that forgot the
+        # subcommand). Print --help to stderr and exit 2 (misuse).
+        if not sys.stdin.isatty():
+            click.echo(ctx.get_help(), err=True)
+            click.echo(
+                "\nerror: no subcommand given and stdin is not a TTY; "
+                "the interactive REPL requires a terminal.",
+                err=True,
+            )
+            sys.exit(2)
         repl_loop()
 
 
@@ -1366,7 +1411,34 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
 
 
 
-@main.command()
+@main.command(
+    epilog="""\b
+Examples:
+  reverse-api-engineer engineer abc123def456
+  reverse-api-engineer engineer abc123def456 -p "add pagination support"
+  reverse-api-engineer engineer abc123def456 --fresh -p "extract auth flow only"
+  reverse-api-engineer engineer abc123def456 --json | jq
+
+\b
+JSON output schema (--json):
+  {
+    "schema_version": 1,
+    "status": "ok" | "error",
+    "run_id": "<id>",
+    "prompt": "..." | null,
+    "fresh": false,
+    "script_path": "/abs/path/api_client.py" | null,
+    "usage": { "input_tokens": ..., "output_tokens": ..., "total_cost": ... },
+    "error": "<message>" | null
+  }
+
+\b
+Exit codes:
+  0  success
+  1  runtime error (engineering failed, run not found)
+  2  misuse
+"""
+)
 @click.argument("run_id")
 @click.option(
     "--prompt",
@@ -1389,20 +1461,59 @@ def run_auto_capture(prompt=None, url=None, model=None, output_dir=None, agent_p
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
-def engineer(run_id, prompt, fresh, model, output_dir):
+@click.option(
+    "--no-interactive",
+    is_flag=True,
+    help="Reserved for symmetry with `agent`/`run`; engineer mode is non-interactive by design.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit a single JSON result on stdout (logs go to stderr). Implies --no-interactive.",
+)
+def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json):
     """Run reverse engineering on a previous run."""
     # --fresh treats --prompt as a full replacement of the original goal;
     # without --fresh, --prompt is additive so the captured run's context is preserved.
     main_prompt = prompt if fresh else None
     additional = prompt if (prompt and not fresh) else None
-    run_engineer(
-        run_id,
-        prompt=main_prompt,
-        additional_instructions=additional,
-        model=model,
-        output_dir=output_dir,
-        is_fresh=fresh,
-    )
+
+    if not as_json:
+        run_engineer(
+            run_id,
+            prompt=main_prompt,
+            additional_instructions=additional,
+            model=model,
+            output_dir=output_dir,
+            is_fresh=fresh,
+        )
+        return
+
+    payload: dict
+    with _quiet_consoles_for_json() as real_stdout:
+        try:
+            result = run_engineer(
+                run_id,
+                prompt=main_prompt,
+                additional_instructions=additional,
+                model=model,
+                output_dir=output_dir,
+                is_fresh=fresh,
+            )
+            payload = _build_engineer_payload(result, run_id=run_id, prompt=prompt, fresh=fresh)
+        except KeyboardInterrupt:
+            payload = _build_engineer_payload(
+                None, run_id=run_id, prompt=prompt, fresh=fresh, error="interrupted"
+            )
+        except Exception as e:
+            payload = _build_engineer_payload(
+                None, run_id=run_id, prompt=prompt, fresh=fresh, error=str(e)
+            )
+
+    real_stdout.write(json.dumps(payload) + "\n")
+    real_stdout.flush()
+    sys.exit(0 if payload["status"] == "ok" else 1)
 
 
 def run_engineer(
