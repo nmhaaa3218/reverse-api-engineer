@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 - **`browser-use` and `stagehand` agent providers**: Both have been retired due to upstream churn. Agent mode now offers only `auto` (Playwright MCP) and `chrome-mcp` (Chrome DevTools MCP). Configs with `agent_provider` set to `browser-use` or `stagehand` migrate to `auto`; the `browser_use_model` and `stagehand_model` keys are dropped silently. The `[agent]` optional-dependency extra is removed.
+- **Tag system (`@record-only`, `@codegen`, `@id`, `@docs`, `@help`)**: The inline tag syntax inside REPL prompts has been removed. Surviving capabilities have first-class CLI flags / arguments instead:
+  - `@record-only` → `manual --no-engineer` (already existed)
+  - `@id <run_id>` → `engineer <run_id>` (positional, already existed)
+  - `@id <run_id> <prompt>` → `engineer <run_id> --prompt "..."` (new flag; layered as additional instructions on top of the captured run's original goal)
+  - `@id <run_id> --fresh <prompt>` → `engineer <run_id> --fresh --prompt "..."` (new flag; with `--fresh`, `--prompt` fully replaces the original goal)
+  - `@codegen` and Playwright-action recording: removed entirely with the `ActionRecorder` and `playwright_codegen` modules (low usage, replaced by the standard capture+engineer flow)
+  - `@docs` (OpenAPI generation): removed for now; will return as a dedicated `docs` subcommand in a follow-up
+  - `@help`: superseded by the existing `/help` slash command in the REPL
+- **`--reverse-engineer/--no-engineer` flag on `agent`**: was parsed but never propagated to the auto-capture path — removed. Agent mode runs an integrated capture + engineering pipeline; use `manual --no-engineer` for HAR-only recordings.
+
+### Added
+- **`engineer --prompt`** and **`engineer --fresh`** CLI flags to replace the equivalent `@id <run_id> [--fresh] <prompt>` REPL syntax.
 
 ## [0.7.1] - 2026-04-06
 

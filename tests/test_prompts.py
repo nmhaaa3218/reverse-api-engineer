@@ -99,7 +99,6 @@ class TestEngineerTemplates:
             scripts_dir="/tmp/scripts",
             existing_client_guidance="",
             additional_instructions="",
-            tag_extra="",
             tag_mode_label="Re-engineer",
             run_id="test123",
             har_parent="/tmp",

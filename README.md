@@ -33,7 +33,6 @@ No more manual reverse engineering—just browse, capture, and get clean API cod
   - [Engineer Mode](#engineer-mode)
   - [Agent Mode](#agent-mode)
   - [Collector Mode](#collector-mode)
-- [Tags](#tags)
 - [Configuration](#-configuration)
   - [Model Selection](#model-selection)
   - [Agent Configuration](#agent-configuration)
@@ -57,7 +56,6 @@ No more manual reverse engineering—just browse, capture, and get clean API cod
 - 📦 **Production Ready**: Generated scripts include error handling, type hints, and documentation
 - 💾 **Session History**: All runs saved locally with full message logs
 - 💰 **Cost Tracking**: Detailed token usage and cost estimation with cache support
-- 🏷️ **Tag System**: Powerful tags for fine-grained control (@record-only, @codegen, @docs, @id)
 
 ### Limitations
 
@@ -199,42 +197,6 @@ $ reverse-api-engineer
 # Agent autonomously searches and collects data
 # Data saved to: ./collected/js_frameworks/
 ```
-
-## 🏷️ Tags
-
-Tags provide additional control and functionality within each mode:
-
-### Manual/Agent Mode Tags
-
-- **`@record-only`** - Record HAR file only, skip reverse engineering step
-  - Example: `@record-only navigate checkout flow`
-  - Useful when you want to capture traffic for later analysis
-
-- **`@codegen`** - Record browser actions and generate Playwright automation script
-  - Example: `@codegen navigate to google`
-  - Captures clicks, fills, and navigations to create a reusable Playwright script
-
-### Engineer Mode Tags
-
-- **`@id <run_id>`** - Switch context to a specific run ID
-  - Example: `@id abc123`
-  - Loads a previous capture session for re-engineering
-
-- **`@id <run_id> <prompt>`** - Run engineer on a specific run with instructions
-  - Example: `@id abc123 extract user profile`
-  - Re-processes a capture with new instructions
-
-- **`@id <run_id> --fresh <prompt>`** - Start fresh (ignore previous scripts)
-  - Example: `@id abc123 --fresh restart analysis`
-  - Generates new code from scratch, ignoring previous implementations
-
-- **`@docs`** - Generate API documentation (OpenAPI spec) for the latest run
-  - Example: `@docs`
-  - Creates OpenAPI specification from captured traffic
-
-- **`@id <run_id> @docs`** - Generate API documentation for a specific run
-  - Example: `@id abc123 @docs`
-  - Creates OpenAPI specification for a specific capture session
 
 ## 🔧 Configuration
 

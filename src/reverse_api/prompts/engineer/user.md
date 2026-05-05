@@ -14,16 +14,14 @@ Here is the output directory where you should save your generated files:
 </output_dir>
 {existing_client_guidance}
 {additional_instructions}
-## Tag-Based Workflows
+## Run Context
 
-This session uses tag-based context loading:
-
-- **@id <run_id>** {tag_extra}: {tag_mode_label} mode active
-  - Target run: {run_id}
-  - HAR location: {har_parent}
-  - Existing {existing_label}: {scripts_dir}
-  - Message history: {messages_path} (available for reference if needed)
-  - Fresh mode: {is_fresh}
+- Mode: {tag_mode_label}
+- Target run: {run_id}
+- HAR location: {har_parent}
+- Existing {existing_label}: {scripts_dir}
+- Message history: {messages_path} (available for reference if needed)
+- Fresh mode: {is_fresh}
 
 By default, treat this as an iterative refinement. The user's prompt describes
 changes or improvements to make to the existing {existing_artifact}. If fresh mode is enabled,
