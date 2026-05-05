@@ -1035,14 +1035,20 @@ def handle_messages(run_id: str, mode_color=THEME_PRIMARY):
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
-@click.option(
-    "--headless",
-    is_flag=True,
-    help="Launch the browser in headless mode (no UI). Required on machines without an X server (CI / VPS).",
-)
-def manual(prompt, url, reverse_engineer, model, output_dir, headless):
-    """Start a manual browser session."""
-    run_manual_capture(prompt, url, reverse_engineer, model, output_dir, headless=headless)
+def manual(prompt, url, reverse_engineer, model, output_dir):
+    """Start a manual browser session.
+
+    \b
+    Interactive only — this mode requires a human in front of a real,
+    visible browser to navigate, click, and submit forms. It cannot be
+    driven by an agent or run on a headless machine. There is no
+    --headless / --json / --no-interactive flag here on purpose.
+
+    For scripted / agent / CI use cases, use `agent --json --headless`
+    instead, which runs an autonomous AI-driven capture without needing
+    a human or an X server.
+    """
+    run_manual_capture(prompt, url, reverse_engineer, model, output_dir)
 
 
 @main.command(
@@ -1162,7 +1168,7 @@ def agent(prompt, url, model, output_dir, no_interactive, as_json, headless):
     sys.exit(0 if payload["status"] == "ok" else 1)
 
 
-def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None, output_dir=None, headless=False):
+def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None, output_dir=None):
     """Shared logic for manual capture."""
     output_dir = output_dir or config_manager.get("output_dir")
 
@@ -1196,7 +1202,7 @@ def run_manual_capture(prompt=None, url=None, reverse_engineer=True, model=None,
         paths={"har_dir": str(get_har_dir(run_id, output_dir))},
     )
 
-    browser = ManualBrowser(run_id=run_id, prompt=prompt, output_dir=output_dir, headless=headless)
+    browser = ManualBrowser(run_id=run_id, prompt=prompt, output_dir=output_dir)
     har_path = browser.start(start_url=url)
 
     if reverse_engineer:

@@ -324,27 +324,31 @@ class TestFollowUpPromptSuppressed:
 
 
 class TestHeadlessFlag:
-    """`--headless` wires through to ManualBrowser / auto-engineer constructors
-    and adjusts MCP args (drops --autoConnect for chrome-mcp, adds --headless
-    for both chrome-mcp and playwright)."""
+    """`--headless` wires through to auto-engineer constructors (agent only —
+    manual mode is intentionally human-only and rejects --headless)."""
 
-    def test_manual_command_threads_headless(self):
+    def test_manual_rejects_headless_flag(self):
+        """`manual --headless` must fail: manual mode requires a human and a
+        visible browser; agents should use `agent --headless` instead."""
         from reverse_api.cli import manual as manual_cmd
 
         runner = CliRunner()
-        with patch("reverse_api.cli.run_manual_capture") as mock_run:
-            result = runner.invoke(manual_cmd, ["-p", "x", "-u", "https://example.com", "--headless"])
-        assert result.exit_code == 0, result.output
-        assert mock_run.call_args.kwargs["headless"] is True
+        result = runner.invoke(manual_cmd, ["-p", "x", "-u", "https://example.com", "--headless"])
+        assert result.exit_code != 0
+        assert "no such option" in result.output.lower() or "--headless" in result.output
 
-    def test_manual_default_headless_false(self):
+    def test_manual_help_mentions_human_only(self):
+        """`manual --help` must make it explicit that the mode requires a
+        human and is not scriptable (so agents inspecting --help self-route
+        to `agent` instead)."""
         from reverse_api.cli import manual as manual_cmd
 
         runner = CliRunner()
-        with patch("reverse_api.cli.run_manual_capture") as mock_run:
-            result = runner.invoke(manual_cmd, ["-p", "x", "-u", "https://example.com"])
-        assert result.exit_code == 0, result.output
-        assert mock_run.call_args.kwargs["headless"] is False
+        result = runner.invoke(manual_cmd, ["--help"])
+        assert result.exit_code == 0
+        out = result.output.lower()
+        assert "human" in out
+        assert "agent" in out  # tells the agent where to go instead
 
     def test_agent_command_threads_headless(self):
         from reverse_api.cli import agent as agent_cmd
