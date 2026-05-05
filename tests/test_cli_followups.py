@@ -221,7 +221,6 @@ class TestFollowUpPromptSuppressed:
         """The base engineer's follow-up prompt short-circuits when
         interactive=False, without ever touching stdin."""
         import asyncio
-        from unittest.mock import MagicMock, patch
 
         from reverse_api.base_engineer import BaseEngineer
 
