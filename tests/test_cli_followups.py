@@ -199,6 +199,41 @@ class TestEngineerCommandJson:
         assert result.exit_code == 0, result.output
 
 
+class TestEngineerJsonMissingRunId:
+    """`engineer --json` without RUN_ID must emit a JSON misuse payload, not
+    Click's plain-text 'missing argument' error.
+
+    Regression for kind-agent observation on PR #66.
+    """
+
+    def test_json_emits_misuse_payload_when_run_id_missing(self):
+        from reverse_api.cli import engineer
+
+        runner = CliRunner()
+        result = runner.invoke(engineer, ["--json"])
+        assert result.exit_code == 2
+        # stdout MUST be valid JSON (wrappers expect it)
+        payload = json.loads(result.stdout.strip())
+        assert payload["status"] == "error"
+        assert payload["error_kind"] == "misuse"
+        assert "RUN_ID" in payload["error"]
+        # And the JSON shape is the full engineer schema
+        assert "schema_version" in payload
+        assert "fresh" in payload
+
+    def test_plain_invocation_still_emits_click_style_error(self):
+        """Non-JSON path keeps Click's familiar Usage + Error format on stderr."""
+        from reverse_api.cli import engineer
+
+        runner = CliRunner()
+        result = runner.invoke(engineer, [])
+        assert result.exit_code == 2
+        # The Click-style error goes to stderr, NOT JSON
+        combined = (result.stderr or "") + (result.stdout or "")
+        assert "Usage" in combined
+        assert "RUN_ID" in combined
+
+
 class TestSchemaV2Normalization:
     """v2 helpers: _normalize_usage, _classify_error, --json-schema-version."""
 

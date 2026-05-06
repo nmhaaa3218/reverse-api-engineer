@@ -1803,7 +1803,7 @@ Exit codes:
   2  misuse
 """
 )
-@click.argument("run_id")
+@click.argument("run_id", required=False)
 @click.option(
     "--prompt",
     "-p",
@@ -1838,6 +1838,26 @@ Exit codes:
 )
 def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json):
     """Run reverse engineering on a previous run."""
+    # `run_id` is declared optional at the click level so that wrappers using
+    # --json get a JSON misuse payload instead of Click's plain-text "missing
+    # argument" error. We re-validate inline to preserve the same exit-2 UX
+    # for non-JSON invocations.
+    if not run_id:
+        if as_json:
+            misuse = _build_engineer_payload(
+                None,
+                run_id="",
+                prompt=prompt,
+                fresh=fresh,
+                error="RUN_ID is required",
+                error_kind_hint="misuse",
+            )
+            click.echo(json.dumps(misuse))
+        else:
+            click.echo("Usage: reverse-api-engineer engineer [OPTIONS] RUN_ID", err=True)
+            click.echo("\nError: Missing argument 'RUN_ID'.", err=True)
+        sys.exit(2)
+
     # --fresh treats --prompt as a full replacement of the original goal;
     # without --fresh, --prompt is additive so the captured run's context is preserved.
     main_prompt = prompt if fresh else None
