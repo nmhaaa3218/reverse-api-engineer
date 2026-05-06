@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import random
 import sys
 from contextlib import contextmanager
@@ -54,8 +55,98 @@ console = Console()
 config_manager = ConfigManager(get_config_path())
 session_manager = SessionManager(get_history_path())
 
-# Stable schema version for --json outputs consumed by other agents/scripts.
+# Schema version for --json outputs. Wrappers can query it via
+# `reverse-api-engineer --json-schema-version`.
 AGENT_JSON_SCHEMA_VERSION = 1
+
+# Map of stable usage keys → SDK-specific candidates (first match wins).
+# Lets `agent --json` and `engineer --json` emit a stable cost/token shape
+# regardless of which SDK (Claude / OpenCode / Copilot) ran underneath.
+_STABLE_USAGE_KEYS: dict[str, tuple[str, ...]] = {
+    "input_tokens": ("input_tokens",),
+    "output_tokens": ("output_tokens",),
+    "cache_read_tokens": ("cache_read_input_tokens", "cache_read_tokens"),
+    "cache_write_tokens": ("cache_creation_input_tokens", "cache_write_tokens"),
+    "total_cost_usd": ("estimated_cost_usd", "total_cost_usd", "total_cost"),
+}
+
+
+def _normalize_usage(raw: dict | None) -> dict:
+    """Return a stable subset of usage fields, keeping the SDK-native dict under .raw.
+
+    Wrappers can rely on the top-level keys; per-SDK extras stay under raw.
+    """
+    if not raw or not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for stable_key, candidates in _STABLE_USAGE_KEYS.items():
+        for c in candidates:
+            if c in raw:
+                out[stable_key] = raw[c]
+                break
+    out["raw"] = raw
+    return out
+
+
+# Machine-readable error categories. Wrappers can react differently to each
+# without pattern-matching on the human-readable `error` string.
+ERROR_KINDS = (
+    "misuse",            # user input invalid / missing required arg
+    "config_invalid",    # config file or env var malformed
+    "permission_denied", # filesystem / API perm denied
+    "network",           # DNS / TCP / TLS / timeout
+    "engine_failure",    # SDK or capture engine crashed mid-run
+    "interrupted",       # KeyboardInterrupt / SIGINT
+    "unknown",           # default fallback
+)
+
+
+def _format_error_message(error: str | BaseException | None) -> str | None:
+    """Render an exception or string into a human-readable error message.
+
+    KeyboardInterrupt has no useful str() — we return the conventional
+    "interrupted" so downstream wrappers can match on a stable message.
+    Empty exception messages fall back to the class name.
+    """
+    if error is None:
+        return None
+    if isinstance(error, KeyboardInterrupt):
+        return "interrupted"
+    if isinstance(error, BaseException):
+        return str(error) or type(error).__name__
+    return error
+
+
+def _classify_error(error: str | BaseException | None, *, default: str = "unknown") -> str | None:
+    """Map an Exception or human error message to one of the ERROR_KINDS.
+
+    Callers may pass a stronger hint by setting `default` (e.g. `misuse` from
+    a CLI argument check, before any exception).
+    """
+    if error is None:
+        return None
+    if isinstance(error, BaseException):
+        if isinstance(error, KeyboardInterrupt):
+            return "interrupted"
+        if isinstance(error, PermissionError):
+            return "permission_denied"
+        if isinstance(error, (ConnectionError, TimeoutError)):
+            return "network"
+        msg = str(error)
+    else:
+        msg = error
+    low = msg.lower()
+    if "permission denied" in low or "errno 13" in low:
+        return "permission_denied"
+    if "interrupted" in low:
+        return "interrupted"
+    if "is required" in low or "missing required" in low or "no such option" in low or "in non-interactive" in low:
+        return "misuse"
+    if any(kw in low for kw in ("connection refused", "timeout", "timed out", "dns", "network", "unreachable", "ssl")):
+        return "network"
+    if "not found" in low or "no run" in low or "produced no run" in low or "produced no result" in low:
+        return "engine_failure"
+    return default
 
 
 @contextmanager
@@ -85,13 +176,195 @@ def _quiet_consoles_for_json():
             c._file = original_inner
 
 
+def _build_dry_run_payload(
+    *,
+    prompt: str | None,
+    url: str | None,
+    model: str | None,
+    output_dir: str | None,
+    headless: bool,
+) -> dict:
+    """Validate config / env / deps without launching a browser.
+
+    Returns a payload with the same top-level shape as `_build_agent_payload`
+    plus a `checks` array (each item: name, status: ok|warn|error, message)
+    and a `would_run` sub-object showing what an actual `agent` invocation
+    would do with these inputs. Status is `error` if any check is `error`,
+    otherwise `ok`. Misuse errors (missing prompt) get `error_kind=misuse`;
+    runtime issues (missing API key, missing node) get `config_invalid`.
+    """
+    import shutil
+    import subprocess
+
+    checks: list[dict] = []
+
+    # 1. Prompt
+    if not prompt or not prompt.strip():
+        checks.append({"name": "prompt", "status": "error", "message": "--prompt is required"})
+    else:
+        checks.append({"name": "prompt", "status": "ok", "message": f"{len(prompt)} chars"})
+
+    # 2. URL (optional, but if given it must look reasonable)
+    if url:
+        if url.startswith("http://") or url.startswith("https://"):
+            checks.append({"name": "url", "status": "ok", "message": url})
+        else:
+            checks.append({
+                "name": "url",
+                "status": "error",
+                "message": f"url must start with http:// or https://, got {url!r}",
+            })
+    else:
+        checks.append({"name": "url", "status": "ok", "message": "(none — agent will pick a start)"})
+
+    # 3. Agent provider
+    agent_provider = config_manager.get("agent_provider", "auto")
+    if agent_provider in ("auto", "chrome-mcp"):
+        checks.append({"name": "agent_provider", "status": "ok", "message": agent_provider})
+    else:
+        checks.append({
+            "name": "agent_provider",
+            "status": "error",
+            "message": f"unknown agent_provider {agent_provider!r}; expected 'auto' or 'chrome-mcp'",
+        })
+
+    # 4. SDK + API key presence (we only check env var existence, not validity)
+    sdk = config_manager.get("sdk", "claude")
+    sdk_env_var = {
+        "claude": "ANTHROPIC_API_KEY",
+        "opencode": "OPENCODE_API_KEY",
+        "copilot": "GITHUB_COPILOT_TOKEN",
+    }.get(sdk)
+    if sdk_env_var is None:
+        checks.append({
+            "name": "sdk",
+            "status": "error",
+            "message": f"unknown sdk {sdk!r}; expected 'claude', 'opencode', or 'copilot'",
+        })
+    elif not os.environ.get(sdk_env_var):
+        checks.append({
+            "name": f"sdk:{sdk}",
+            "status": "warn",
+            "message": f"{sdk_env_var} not set in env (the SDK may still resolve auth via a config file)",
+        })
+    else:
+        checks.append({"name": f"sdk:{sdk}", "status": "ok", "message": f"{sdk_env_var} present"})
+
+    # 5. Node.js + npx for MCP servers (both auto and chrome-mcp shell out to
+    # `npx <package>`; minimal Docker images sometimes ship `node` without
+    # `npx`, so checking only `node` would lull dry-run into a false ok).
+    node = shutil.which("node")
+    if node is None:
+        checks.append({
+            "name": "node",
+            "status": "error",
+            "message": "node not found in PATH; required by both auto (rae-playwright-mcp) and chrome-mcp",
+        })
+    else:
+        try:
+            ver = subprocess.run(
+                [node, "--version"], capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+            checks.append({"name": "node", "status": "ok", "message": ver})
+        except Exception as e:
+            checks.append({"name": "node", "status": "warn", "message": f"could not query version: {e}"})
+
+    npx = shutil.which("npx")
+    if npx is None:
+        checks.append({
+            "name": "npx",
+            "status": "error",
+            "message": "npx not found in PATH; both MCP servers are launched via `npx <package>`",
+        })
+    else:
+        checks.append({"name": "npx", "status": "ok", "message": npx})
+
+    # 6. Headed chrome-mcp requires the user has a real Chrome with auto-connect
+    if agent_provider == "chrome-mcp" and not headless:
+        checks.append({
+            "name": "chrome-mcp:auto-connect",
+            "status": "warn",
+            "message": "chrome-mcp without --headless requires Chrome 146+ with auto-connect enabled at chrome://inspect/#remote-debugging — this is not auto-checkable",
+        })
+
+    # 7. Output dir writability — probe with a unique filename so we never
+    # clobber a real user file (a fixed name like `.dry_run_write_probe`
+    # could legitimately exist in someone's output dir).
+    import secrets
+
+    base = Path(output_dir or config_manager.get("output_dir") or "~/.reverse-api/runs").expanduser()
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        probe = base / f".rae_dry_run_probe_{os.getpid()}_{secrets.token_hex(4)}"
+        # If somehow this exact filename already exists, refuse to touch it.
+        if probe.exists():
+            raise FileExistsError(f"unique probe path collision: {probe}")
+        probe.write_text("")
+        probe.unlink()
+        checks.append({"name": "output_dir", "status": "ok", "message": str(base)})
+    except Exception as e:
+        checks.append({
+            "name": "output_dir",
+            "status": "error",
+            "message": f"{base}: {e}",
+        })
+
+    # Aggregate
+    has_error = any(c["status"] == "error" for c in checks)
+    final_error = None
+    error_kind = None
+    if has_error:
+        first_err = next(c for c in checks if c["status"] == "error")
+        final_error = f"{first_err['name']}: {first_err['message']}"
+        # Misuse for prompt/url; config_invalid otherwise
+        error_kind = "misuse" if first_err["name"] in ("prompt", "url") else "config_invalid"
+
+    # `would_run.model` resolution mirrors the live capture path: each SDK
+    # has its own model config key, so picking `claude_code_model` for an
+    # opencode/copilot session would misreport what would actually run.
+    sdk_model_key = {
+        "claude": "claude_code_model",
+        "opencode": "opencode_model",
+        "copilot": "copilot_model",
+    }.get(sdk, "claude_code_model")
+    sdk_default_model = {
+        "claude": "claude-sonnet-4-6",
+        "opencode": "claude-opus-4-6",
+        "copilot": "gpt-5",
+    }.get(sdk, "claude-sonnet-4-6")
+    resolved_model = model or config_manager.get(sdk_model_key, sdk_default_model)
+
+    return {
+        "schema_version": AGENT_JSON_SCHEMA_VERSION,
+        "status": "error" if has_error else "ok",
+        "run_id": None,
+        "prompt": prompt,
+        "url": url,
+        "mode": "dry-run",
+        "har_path": None,
+        "script_path": None,
+        "usage": {},
+        "error": final_error,
+        "error_kind": error_kind,
+        "would_run": {
+            "agent_provider": agent_provider,
+            "sdk": sdk,
+            "model": resolved_model,
+            "output_dir": str(base),
+            "headless": headless,
+        },
+        "checks": checks,
+    }
+
+
 def _build_agent_payload(
     result: dict | None,
     *,
     prompt: str | None,
     url: str | None,
     output_dir: str | None = None,
-    error: str | None = None,
+    error: str | BaseException | None = None,
+    error_kind_hint: str = "unknown",
 ) -> dict:
     """Normalize an agent capture result into a stable JSON shape.
 
@@ -101,22 +374,27 @@ def _build_agent_payload(
     result = result or {}
     run_id = result.get("run_id")
     inner_error = result.get("error")
-    final_error = error or inner_error or (None if run_id else "agent capture produced no run")
+    final_error_obj = error if error is not None else inner_error
+    if final_error_obj is None and not run_id:
+        final_error_obj = "agent capture produced no run"
+    error_str = _format_error_message(final_error_obj)
+    error_kind = _classify_error(final_error_obj, default=error_kind_hint) if final_error_obj else None
     har_path = None
     if run_id:
         candidate = get_har_dir(run_id, output_dir) / "recording.har"
         har_path = str(candidate) if candidate.exists() else None
     return {
         "schema_version": AGENT_JSON_SCHEMA_VERSION,
-        "status": "error" if final_error else "ok",
+        "status": "error" if error_str else "ok",
         "run_id": run_id,
         "prompt": prompt,
         "url": url,
         "mode": result.get("mode"),
         "har_path": har_path,
         "script_path": result.get("script_path"),
-        "usage": result.get("usage") or {},
-        "error": final_error,
+        "usage": _normalize_usage(result.get("usage")),
+        "error": error_str,
+        "error_kind": error_kind,
     }
 
 
@@ -126,7 +404,8 @@ def _build_engineer_payload(
     run_id: str,
     prompt: str | None,
     fresh: bool,
-    error: str | None = None,
+    error: str | BaseException | None = None,
+    error_kind_hint: str = "unknown",
 ) -> dict:
     """Normalize an engineer-mode result into a stable JSON shape.
 
@@ -135,18 +414,23 @@ def _build_engineer_payload(
     to --prompt (which may have been used as either a full replacement or as
     additional instructions depending on --fresh).
     """
-    result = result if result is not None else {}
-    inner_error = result.get("error") if isinstance(result, dict) else None
-    final_error = error or inner_error or (None if result else "engineering produced no result")
+    result = result if isinstance(result, dict) else {}
+    inner_error = result.get("error")
+    final_error_obj = error if error is not None else inner_error
+    if final_error_obj is None and not result:
+        final_error_obj = "engineering produced no result"
+    error_str = _format_error_message(final_error_obj)
+    error_kind = _classify_error(final_error_obj, default=error_kind_hint) if final_error_obj else None
     return {
         "schema_version": AGENT_JSON_SCHEMA_VERSION,
-        "status": "error" if final_error else "ok",
+        "status": "error" if error_str else "ok",
         "run_id": run_id,
         "prompt": prompt,
         "fresh": fresh,
-        "script_path": result.get("script_path") if isinstance(result, dict) else None,
-        "usage": (result.get("usage") if isinstance(result, dict) else None) or {},
-        "error": final_error,
+        "script_path": result.get("script_path"),
+        "usage": _normalize_usage(result.get("usage")),
+        "error": error_str,
+        "error_kind": error_kind,
     }
 
 # Mode definitions
@@ -416,15 +700,26 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 @click.group(invoke_without_command=True, context_settings=CONTEXT_SETTINGS)
 @click.pass_context
 @click.version_option(version=__version__)
-def main(ctx: click.Context):
+@click.option(
+    "--json-schema-version",
+    "show_schema_version",
+    is_flag=True,
+    help="Print the agent/engineer JSON schema_version this binary emits and exit.",
+)
+def main(ctx: click.Context, show_schema_version: bool):
     """reverse-api-engineer: reverse engineer apis.
 
     Run without a subcommand to start the interactive REPL; use agent, manual,
     or engineer for CLI mode.
 
     Most subcommands accept --json and --no-interactive for scripted use; see
-    `<cmd> --help` for per-command details.
+    `<cmd> --help` for per-command details. Wrappers that need to gate on the
+    payload schema can call `reverse-api-engineer --json-schema-version`.
     """
+    if show_schema_version:
+        click.echo(str(AGENT_JSON_SCHEMA_VERSION))
+        ctx.exit(0)
+
     if ctx.invoked_subcommand is None:
         # Refuse to drop into the prompt_toolkit REPL when stdin is not a TTY:
         # without an interactive terminal the REPL would block on stdin
@@ -1105,12 +1400,28 @@ Exit codes:
     is_flag=True,
     help="Launch the MCP-controlled browser in headless mode (required on machines without an X server). For chrome-mcp this drops --autoConnect since auto-connect requires a headed Chrome instance.",
 )
-def agent(prompt, url, model, output_dir, no_interactive, as_json, headless):
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate prompt/url/config/env without launching the browser. Emits a manifest of what would run + check results. Implies --json. Exits 0 if all checks pass, 1 if any error.",
+)
+def agent(prompt, url, model, output_dir, no_interactive, as_json, headless, dry_run):
     """Run autonomous agent browser session.
 
     Agent mode runs an integrated capture + reverse-engineering pipeline; if you
     only want a HAR recording, use `manual --no-engineer` instead.
     """
+    if dry_run:
+        # --dry-run is fundamentally about emitting machine-parseable validation
+        # results, so it implies --json (and therefore --no-interactive).
+        with _quiet_consoles_for_json() as real_stdout:
+            payload = _build_dry_run_payload(
+                prompt=prompt, url=url, model=model, output_dir=output_dir, headless=headless
+            )
+        real_stdout.write(json.dumps(payload) + "\n")
+        real_stdout.flush()
+        sys.exit(0 if payload["status"] == "ok" else 1)
+
     no_interactive = no_interactive or as_json
 
     if no_interactive and not (prompt and prompt.strip()):
@@ -1121,6 +1432,7 @@ def agent(prompt, url, model, output_dir, no_interactive, as_json, headless):
                 url=url,
                 output_dir=output_dir,
                 error="--prompt is required in non-interactive/--json mode",
+                error_kind_hint="misuse",
             )
             click.echo(json.dumps(misuse))
         else:
@@ -1154,13 +1466,15 @@ def agent(prompt, url, model, output_dir, no_interactive, as_json, headless):
                 headless=headless,
             )
             payload = _build_agent_payload(result, prompt=prompt, url=url, output_dir=output_dir)
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as e:
             payload = _build_agent_payload(
-                {}, prompt=prompt, url=url, output_dir=output_dir, error="interrupted"
+                {}, prompt=prompt, url=url, output_dir=output_dir, error=e
             )
         except Exception as e:
+            # Pass the exception object so _classify_error can use isinstance
+            # (PermissionError → permission_denied, ConnectionError → network, ...)
             payload = _build_agent_payload(
-                {}, prompt=prompt, url=url, output_dir=output_dir, error=str(e)
+                {}, prompt=prompt, url=url, output_dir=output_dir, error=e
             )
 
     real_stdout.write(json.dumps(payload) + "\n")
@@ -1489,7 +1803,7 @@ Exit codes:
   2  misuse
 """
 )
-@click.argument("run_id")
+@click.argument("run_id", required=False)
 @click.option(
     "--prompt",
     "-p",
@@ -1524,6 +1838,26 @@ Exit codes:
 )
 def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json):
     """Run reverse engineering on a previous run."""
+    # `run_id` is declared optional at the click level so that wrappers using
+    # --json get a JSON misuse payload instead of Click's plain-text "missing
+    # argument" error. We re-validate inline to preserve the same exit-2 UX
+    # for non-JSON invocations.
+    if not run_id:
+        if as_json:
+            misuse = _build_engineer_payload(
+                None,
+                run_id="",
+                prompt=prompt,
+                fresh=fresh,
+                error="RUN_ID is required",
+                error_kind_hint="misuse",
+            )
+            click.echo(json.dumps(misuse))
+        else:
+            click.echo("Usage: reverse-api-engineer engineer [OPTIONS] RUN_ID", err=True)
+            click.echo("\nError: Missing argument 'RUN_ID'.", err=True)
+        sys.exit(2)
+
     # --fresh treats --prompt as a full replacement of the original goal;
     # without --fresh, --prompt is additive so the captured run's context is preserved.
     main_prompt = prompt if fresh else None
@@ -1557,13 +1891,14 @@ def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json):
                 interactive=interactive,
             )
             payload = _build_engineer_payload(result, run_id=run_id, prompt=prompt, fresh=fresh)
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as e:
             payload = _build_engineer_payload(
-                None, run_id=run_id, prompt=prompt, fresh=fresh, error="interrupted"
+                None, run_id=run_id, prompt=prompt, fresh=fresh, error=e
             )
         except Exception as e:
+            # Pass the exception object so _classify_error can use isinstance.
             payload = _build_engineer_payload(
-                None, run_id=run_id, prompt=prompt, fresh=fresh, error=str(e)
+                None, run_id=run_id, prompt=prompt, fresh=fresh, error=e
             )
 
     real_stdout.write(json.dumps(payload) + "\n")

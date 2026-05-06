@@ -27,6 +27,7 @@ EXPECTED_ENGINEER_KEYS = {
     "script_path",
     "usage",
     "error",
+    "error_kind",
 }
 
 
@@ -78,7 +79,10 @@ class TestBuildEngineerPayload:
 
     def test_success_shape(self):
         payload = _build_engineer_payload(
-            {"script_path": "/abs/api_client.py", "usage": {"total_cost": 0.001}},
+            {
+                "script_path": "/abs/api_client.py",
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_cost": 0.001},
+            },
             run_id="abc123",
             prompt="add pagination",
             fresh=False,
@@ -89,14 +93,18 @@ class TestBuildEngineerPayload:
         assert payload["prompt"] == "add pagination"
         assert payload["fresh"] is False
         assert payload["script_path"] == "/abs/api_client.py"
-        assert payload["usage"]["total_cost"] == 0.001
+        # `total_cost` (legacy/Copilot key) is normalized to `total_cost_usd`
+        assert payload["usage"]["total_cost_usd"] == 0.001
+        assert payload["usage"]["raw"]["total_cost"] == 0.001
         assert payload["error"] is None
+        assert payload["error_kind"] is None
         assert set(payload.keys()) == EXPECTED_ENGINEER_KEYS
 
     def test_none_result_is_error(self):
         payload = _build_engineer_payload(None, run_id="abc", prompt=None, fresh=False)
         assert payload["status"] == "error"
         assert payload["error"]
+        assert payload["error_kind"] == "engine_failure"
         assert set(payload.keys()) == EXPECTED_ENGINEER_KEYS
 
     def test_explicit_error_overrides(self):
@@ -189,6 +197,374 @@ class TestEngineerCommandJson:
         with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}):
             result = runner.invoke(engineer, ["abc123", "--no-interactive"])
         assert result.exit_code == 0, result.output
+
+
+class TestEngineerJsonMissingRunId:
+    """`engineer --json` without RUN_ID must emit a JSON misuse payload, not
+    Click's plain-text 'missing argument' error.
+
+    Regression for kind-agent observation on PR #66.
+    """
+
+    def test_json_emits_misuse_payload_when_run_id_missing(self):
+        from reverse_api.cli import engineer
+
+        runner = CliRunner()
+        result = runner.invoke(engineer, ["--json"])
+        assert result.exit_code == 2
+        # stdout MUST be valid JSON (wrappers expect it)
+        payload = json.loads(result.stdout.strip())
+        assert payload["status"] == "error"
+        assert payload["error_kind"] == "misuse"
+        assert "RUN_ID" in payload["error"]
+        # And the JSON shape is the full engineer schema
+        assert "schema_version" in payload
+        assert "fresh" in payload
+
+    def test_plain_invocation_still_emits_click_style_error(self):
+        """Non-JSON path keeps Click's familiar Usage + Error format on stderr."""
+        from reverse_api.cli import engineer
+
+        runner = CliRunner()
+        result = runner.invoke(engineer, [])
+        assert result.exit_code == 2
+        # The Click-style error goes to stderr, NOT JSON
+        combined = (result.stderr or "") + (result.stdout or "")
+        assert "Usage" in combined
+        assert "RUN_ID" in combined
+
+
+class TestSchemaV2Normalization:
+    """v2 helpers: _normalize_usage, _classify_error, --json-schema-version."""
+
+    def test_normalize_usage_picks_stable_keys(self):
+        """Claude SDK emits cache_creation_input_tokens / estimated_cost_usd;
+        Copilot/OpenCode use different keys. Normalization gives a stable
+        subset and parks everything under .raw."""
+        from reverse_api.cli import _normalize_usage
+
+        out = _normalize_usage({
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cache_creation_input_tokens": 100,
+            "cache_read_input_tokens": 200,
+            "estimated_cost_usd": 0.05,
+            "service_tier": "standard",
+            "iterations": [],
+        })
+        assert out["input_tokens"] == 10
+        assert out["output_tokens"] == 20
+        assert out["cache_write_tokens"] == 100
+        assert out["cache_read_tokens"] == 200
+        assert out["total_cost_usd"] == 0.05
+        # SDK extras are preserved under raw, not promoted to top level
+        assert out["raw"]["service_tier"] == "standard"
+        assert out["raw"]["iterations"] == []
+        assert "service_tier" not in out  # stable subset only
+        assert "iterations" not in out
+
+    def test_normalize_usage_alt_legacy_keys(self):
+        """`total_cost` (Copilot) and direct `cache_read_tokens` (already-normalized
+        input) map cleanly through the same pipeline."""
+        from reverse_api.cli import _normalize_usage
+
+        out = _normalize_usage({"total_cost": 0.42, "cache_read_tokens": 5})
+        assert out["total_cost_usd"] == 0.42
+        assert out["cache_read_tokens"] == 5
+
+    def test_normalize_usage_empty(self):
+        from reverse_api.cli import _normalize_usage
+
+        assert _normalize_usage(None) == {}
+        assert _normalize_usage({}) == {}
+        assert _normalize_usage("not a dict") == {}
+
+    def test_classify_error_kinds(self):
+        from reverse_api.cli import _classify_error
+
+        assert _classify_error(None) is None
+        assert _classify_error(KeyboardInterrupt()) == "interrupted"
+        assert _classify_error(PermissionError("nope")) == "permission_denied"
+        assert _classify_error(ConnectionError("DNS failed")) == "network"
+        assert _classify_error(TimeoutError("timed out")) == "network"
+        assert _classify_error("[Errno 13] Permission denied: '/x'") == "permission_denied"
+        assert _classify_error("--prompt is required in non-interactive/--json mode") == "misuse"
+        assert _classify_error("agent capture produced no run") == "engine_failure"
+        assert _classify_error("connection refused") == "network"
+        assert _classify_error("totally unrecognized message") == "unknown"
+        # Caller can override the default
+        assert _classify_error("totally unrecognized message", default="engine_failure") == "engine_failure"
+
+    def test_misuse_payload_has_misuse_kind(self):
+        """`agent --json` without --prompt → error_kind=misuse (not unknown)."""
+        from reverse_api.cli import agent
+
+        runner = CliRunner()
+        result = runner.invoke(agent, ["--json"])
+        payload = json.loads(result.stdout.strip())
+        assert payload["error_kind"] == "misuse"
+
+    def test_keyboard_interrupt_payload_has_interrupted_kind(self):
+        from reverse_api.cli import agent
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.run_agent_capture", side_effect=KeyboardInterrupt):
+            result = runner.invoke(agent, ["--json", "-p", "x"])
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["error_kind"] == "interrupted"
+        assert payload["error"] == "interrupted"
+
+    def test_permission_error_payload_has_permission_denied_kind(self):
+        from reverse_api.cli import agent
+
+        runner = CliRunner()
+        with patch(
+            "reverse_api.cli.run_agent_capture",
+            side_effect=PermissionError(13, "Permission denied", "/forbidden"),
+        ):
+            result = runner.invoke(agent, ["--json", "-p", "x"])
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["error_kind"] == "permission_denied"
+
+
+class TestJsonSchemaVersionFlag:
+    """`--json-schema-version` exposes the version a wrapper can gate on."""
+
+    def test_root_flag_emits_version(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--json-schema-version"])
+        assert result.exit_code == 0
+        from reverse_api.cli import AGENT_JSON_SCHEMA_VERSION as v
+        assert result.stdout.strip() == str(v)
+
+    def test_root_flag_advertised_in_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert "--json-schema-version" in result.output
+
+
+class TestAgentDryRun:
+    """`agent --dry-run` validates without launching the browser."""
+
+    def test_dry_run_ok_path(self, tmp_path):
+        """All checks pass → status=ok, exit 0, full payload + checks array."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        # Patch config_manager so we don't depend on the user's real config
+        with patch("reverse_api.cli.config_manager") as cm, \
+             patch.dict("os.environ", {"ANTHROPIC_API_KEY": "fake"}, clear=False):
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "claude",
+                "claude_code_model": "claude-sonnet-4-6",
+                "output_dir": str(tmp_path),
+            }.get(key, default)
+            result = runner.invoke(
+                agent_cmd, ["--dry-run", "-p", "fetch jobs", "-u", "https://example.com"]
+            )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip())
+        assert payload["status"] == "ok"
+        assert payload["mode"] == "dry-run"
+        assert payload["run_id"] is None
+        assert payload["error"] is None
+        assert payload["would_run"]["agent_provider"] == "auto"
+        assert payload["would_run"]["sdk"] == "claude"
+        assert payload["would_run"]["headless"] is False
+        # Checks include prompt, url, agent_provider, sdk, node, output_dir
+        check_names = {c["name"] for c in payload["checks"]}
+        assert "prompt" in check_names
+        assert "url" in check_names
+        assert "agent_provider" in check_names
+        assert "node" in check_names
+        assert "output_dir" in check_names
+
+    def test_dry_run_missing_prompt_is_misuse(self, tmp_path):
+        """Missing --prompt → error_kind=misuse, exit 1, no browser launched."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.config_manager") as cm:
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "claude",
+                "output_dir": str(tmp_path),
+            }.get(key, default)
+            result = runner.invoke(agent_cmd, ["--dry-run"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip())
+        assert payload["status"] == "error"
+        assert payload["error_kind"] == "misuse"
+        assert any(c["name"] == "prompt" and c["status"] == "error" for c in payload["checks"])
+
+    def test_dry_run_bad_url_is_misuse(self, tmp_path):
+        """A url that doesn't start with http(s):// is flagged."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.config_manager") as cm:
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "claude",
+                "output_dir": str(tmp_path),
+            }.get(key, default)
+            result = runner.invoke(agent_cmd, ["--dry-run", "-p", "x", "-u", "ftp://nope"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip())
+        assert payload["error_kind"] == "misuse"
+        assert any(c["name"] == "url" and c["status"] == "error" for c in payload["checks"])
+
+    def test_dry_run_unwritable_output_dir_is_config_invalid(self):
+        """Unwritable output_dir → error_kind=config_invalid, not misuse."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.config_manager") as cm:
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "claude",
+                "output_dir": "/sys/forbidden",
+            }.get(key, default)
+            result = runner.invoke(
+                agent_cmd, ["--dry-run", "-p", "x", "--output-dir", "/sys/forbidden"]
+            )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip())
+        assert payload["error_kind"] == "config_invalid"
+        assert any(c["name"] == "output_dir" and c["status"] == "error" for c in payload["checks"])
+
+    def test_dry_run_does_not_launch_browser(self, tmp_path):
+        """--dry-run must NOT call run_agent_capture (no browser, no LLM, no cost)."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.config_manager") as cm, \
+             patch("reverse_api.cli.run_agent_capture") as mock_run:
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "claude",
+                "output_dir": str(tmp_path),
+            }.get(key, default)
+            runner.invoke(agent_cmd, ["--dry-run", "-p", "x", "-u", "https://example.com"])
+        mock_run.assert_not_called()
+
+    def test_dry_run_help_mentions_implies_json(self):
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        result = runner.invoke(agent_cmd, ["--help"])
+        assert "--dry-run" in result.output
+        # Click reflows whitespace, so "Implies\n--json" or "Implies --json"
+        assert "Implies" in result.output and "--json" in result.output
+
+    def test_dry_run_checks_npx_separately_from_node(self, tmp_path):
+        """cubic-dev-ai PR #67 review (P2): MCP servers shell out to `npx`,
+        so dry-run must check npx availability — not just node — otherwise
+        a minimal Docker image with node-but-no-npx passes dry-run and then
+        fails the real run."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+
+        # Pretend npx is missing while node is present
+        def fake_which(name):
+            if name == "node":
+                return "/usr/bin/node"
+            if name == "npx":
+                return None
+            return None
+
+        with patch("reverse_api.cli.config_manager") as cm, \
+             patch("shutil.which", side_effect=fake_which):
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "claude",
+                "output_dir": str(tmp_path),
+            }.get(key, default)
+            result = runner.invoke(agent_cmd, ["--dry-run", "-p", "x"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout.strip())
+        assert payload["error_kind"] == "config_invalid"
+        npx_check = next(c for c in payload["checks"] if c["name"] == "npx")
+        assert npx_check["status"] == "error"
+        assert "npx not found" in npx_check["message"]
+
+    def test_dry_run_probe_does_not_clobber_existing_files(self, tmp_path):
+        """cubic-dev-ai PR #67 review (P2): a fixed probe filename like
+        `.dry_run_write_probe` could legitimately exist in a user's output
+        dir and would be deleted by the probe. We use a unique filename
+        with PID + random hex so collisions are astronomically unlikely,
+        and refuse to touch any path that already exists."""
+        from reverse_api.cli import agent as agent_cmd
+
+        # Pre-populate the output dir with a file that would collide with
+        # the OLD fixed probe name. The dry-run must not delete it.
+        canary = tmp_path / ".dry_run_write_probe"
+        canary.write_text("user data — do not delete")
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.config_manager") as cm:
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "claude",
+                "output_dir": str(tmp_path),
+            }.get(key, default)
+            result = runner.invoke(agent_cmd, ["--dry-run", "-p", "x"])
+
+        assert result.exit_code == 0, result.output
+        # The user's pre-existing file is untouched
+        assert canary.exists()
+        assert canary.read_text() == "user data — do not delete"
+
+    def test_dry_run_resolves_correct_model_per_sdk(self, tmp_path):
+        """cubic-dev-ai PR #67 review (P2): when sdk=opencode the live agent
+        uses `opencode_model`, not `claude_code_model`. would_run.model must
+        reflect what would actually run, otherwise the manifest lies."""
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+
+        # Configure opencode SDK with a custom opencode_model
+        with patch("reverse_api.cli.config_manager") as cm:
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "opencode",
+                "opencode_model": "claude-opus-4-6-custom",
+                "claude_code_model": "claude-sonnet-4-6-irrelevant",
+                "output_dir": str(tmp_path),
+            }.get(key, default)
+            result = runner.invoke(agent_cmd, ["--dry-run", "-p", "x"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip())
+        assert payload["would_run"]["sdk"] == "opencode"
+        assert payload["would_run"]["model"] == "claude-opus-4-6-custom"
+        # And NOT the claude_code_model that the old code would have grabbed
+        assert "irrelevant" not in payload["would_run"]["model"]
+
+    def test_dry_run_copilot_model_resolution(self, tmp_path):
+        from reverse_api.cli import agent as agent_cmd
+
+        runner = CliRunner()
+        with patch("reverse_api.cli.config_manager") as cm:
+            cm.get.side_effect = lambda key, default=None: {
+                "agent_provider": "auto",
+                "sdk": "copilot",
+                "copilot_model": "gpt-5-custom",
+                "output_dir": str(tmp_path),
+            }.get(key, default)
+            result = runner.invoke(agent_cmd, ["--dry-run", "-p", "x"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout.strip())
+        assert payload["would_run"]["sdk"] == "copilot"
+        assert payload["would_run"]["model"] == "gpt-5-custom"
 
 
 class TestRootHelpMentionsScripted:
