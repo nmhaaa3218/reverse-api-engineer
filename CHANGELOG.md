@@ -7,20 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-06
+
+### Added
+- **Agent-friendly CLI surface**: First-class non-interactive mode for invocation from other agents and scripts
+  - **`--json`** on `agent` and `engineer`: emit a single structured JSON result (run_id, status, artifacts, usage, error info) instead of streaming TUI output. Auto-suppresses follow-up prompts and TTY-detects at REPL entry
+  - **`--no-interactive`** on `engineer`: skip the follow-up loop without forcing JSON output
+  - **`agent --dry-run`**: pre-flight validation (config, network, MCP availability) without launching a browser
+  - **`agent --headless`**: run agent mode without a visible browser window (manual mode keeps the human-in-the-loop and does not accept `--headless`)
+  - **`--json-schema-version`**: explicit version string (`v2`) on JSON output so callers can pin their parser
+  - **Stable usage normalization** and **`error_kind` enum**: machine-readable error categories and consistent token/cost shapes across SDKs
+- **`engineer --prompt`** and **`engineer --fresh`** CLI flags: replace the equivalent `@id <run_id> [--fresh] <prompt>` REPL syntax. With `--fresh`, `--prompt` fully replaces the captured run's goal; without `--fresh`, it layers additional instructions on top
+- **`--help` epilogs**: expanded help output with examples for every subcommand
+
+### Changed
+- **Prompts**: extracted to standalone markdown templates under `src/reverse_api/prompts/` for easier review and iteration; LLM guidelines tightened
+- **Banner**: replaced the SVG banner with a new painted-ruins JPG
+
 ### Removed
-- **`browser-use` and `stagehand` agent providers**: Both have been retired due to upstream churn. Agent mode now offers only `auto` (Playwright MCP) and `chrome-mcp` (Chrome DevTools MCP). Configs with `agent_provider` set to `browser-use` or `stagehand` migrate to `auto`; the `browser_use_model` and `stagehand_model` keys are dropped silently. The `[agent]` optional-dependency extra is removed.
+- **`browser-use` and `stagehand` agent providers**: Both retired due to upstream churn. Agent mode now offers only `auto` (Playwright MCP) and `chrome-mcp` (Chrome DevTools MCP). Configs with `agent_provider` set to `browser-use` or `stagehand` migrate to `auto`; the `browser_use_model` and `stagehand_model` keys are dropped silently. The `[agent]` optional-dependency extra is removed
 - **Tag system (`@record-only`, `@codegen`, `@id`, `@docs`, `@help`)**: The inline tag syntax inside REPL prompts has been removed. Surviving capabilities have first-class CLI flags / arguments instead:
   - `@record-only` → `manual --no-engineer` (already existed)
   - `@id <run_id>` → `engineer <run_id>` (positional, already existed)
-  - `@id <run_id> <prompt>` → `engineer <run_id> --prompt "..."` (new flag; layered as additional instructions on top of the captured run's original goal)
-  - `@id <run_id> --fresh <prompt>` → `engineer <run_id> --fresh --prompt "..."` (new flag; with `--fresh`, `--prompt` fully replaces the original goal)
+  - `@id <run_id> <prompt>` → `engineer <run_id> --prompt "..."`
+  - `@id <run_id> --fresh <prompt>` → `engineer <run_id> --fresh --prompt "..."`
   - `@codegen` and Playwright-action recording: removed entirely with the `ActionRecorder` and `playwright_codegen` modules (low usage, replaced by the standard capture+engineer flow)
   - `@docs` (OpenAPI generation): removed for now; will return as a dedicated `docs` subcommand in a follow-up
   - `@help`: superseded by the existing `/help` slash command in the REPL
-- **`--reverse-engineer/--no-engineer` flag on `agent`**: was parsed but never propagated to the auto-capture path — removed. Agent mode runs an integrated capture + engineering pipeline; use `manual --no-engineer` for HAR-only recordings.
+- **`--reverse-engineer/--no-engineer` flag on `agent`**: was parsed but never propagated to the auto-capture path — removed. Agent mode runs an integrated capture + engineering pipeline; use `manual --no-engineer` for HAR-only recordings
 
-### Added
-- **`engineer --prompt`** and **`engineer --fresh`** CLI flags to replace the equivalent `@id <run_id> [--fresh] <prompt>` REPL syntax.
+### Fixed
+- **`engineer --json`**: emits JSON even when `RUN_ID` is missing (previously fell through to TUI error)
+- **Follow-up prompt**: suppressed in `--json` / `--no-interactive` mode so non-interactive callers never block on stdin
 
 ## [0.7.1] - 2026-04-06
 
